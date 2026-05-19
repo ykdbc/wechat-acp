@@ -16,6 +16,10 @@ export function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
+export function encryptedSize(rawSize: number): number {
+  return Math.ceil((rawSize + 1) / 16) * 16;
+}
+
 /**
  * Parse the AES key from CDN media reference.
  * The key can be either:
@@ -52,12 +56,14 @@ export async function downloadAndDecrypt(
 export async function uploadToCdn(params: {
   buffer: Buffer;
   uploadParam: string;
+  uploadFullUrl?: string;
   aesKey: Buffer;
   filekey: string;
   cdnBaseUrl: string;
 }): Promise<string> {
   const encrypted = encryptAesEcb(params.buffer, params.aesKey);
-  const url = `${params.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(params.uploadParam)}&filekey=${encodeURIComponent(params.filekey)}`;
+  const url = params.uploadFullUrl
+    ?? `${params.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(params.uploadParam)}&filekey=${encodeURIComponent(params.filekey)}`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -65,7 +71,10 @@ export async function uploadToCdn(params: {
     body: encrypted,
   });
 
-  if (!res.ok) throw new Error(`CDN upload failed: HTTP ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`CDN upload failed: HTTP ${res.status}${body ? `: ${body}` : ""}`);
+  }
   const downloadParam = res.headers.get("x-encrypted-param");
   if (!downloadParam) throw new Error("CDN upload: missing x-encrypted-param header");
   return downloadParam;

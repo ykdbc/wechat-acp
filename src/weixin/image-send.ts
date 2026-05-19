@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import { getUploadUrl, sendMessage } from "./api.js";
-import { uploadToCdn } from "./media.js";
+import { encryptedSize, uploadToCdn } from "./media.js";
 import {
   MessageItemType,
   MessageState,
@@ -20,8 +20,11 @@ export async function sendImageMessage(
   }
 
   const aesKey = crypto.randomBytes(16);
-  const filekey = `wechat-acp-${crypto.randomUUID()}.png`;
+  const aesKeyHex = aesKey.toString("hex");
+  const encodedAesKey = Buffer.from(aesKeyHex, "utf-8").toString("base64");
+  const filekey = crypto.randomBytes(16).toString("hex");
   const md5 = crypto.createHash("md5").update(image.buffer).digest("hex");
+  const ciphertextSize = encryptedSize(image.buffer.length);
 
   const upload = await getUploadUrl({
     baseUrl: opts.baseUrl,
@@ -32,9 +35,9 @@ export async function sendImageMessage(
       to_user_id: to,
       rawsize: image.buffer.length,
       rawfilemd5: md5,
-      filesize: image.buffer.length,
+      filesize: ciphertextSize,
       no_need_thumb: true,
-      aeskey: aesKey.toString("base64"),
+      aeskey: aesKeyHex,
     },
   });
 
@@ -45,6 +48,7 @@ export async function sendImageMessage(
   const downloadParam = await uploadToCdn({
     buffer: image.buffer,
     uploadParam: upload.upload_param,
+    uploadFullUrl: upload.upload_full_url,
     aesKey,
     filekey,
     cdnBaseUrl: opts.cdnBaseUrl,
@@ -68,11 +72,12 @@ export async function sendImageMessage(
             image_item: {
               media: {
                 encrypt_query_param: downloadParam,
-                aes_key: aesKey.toString("base64"),
+                aes_key: encodedAesKey,
+                encrypt_type: 1,
               },
-              aeskey: aesKey.toString("base64"),
-              mid_size: image.buffer.length,
-              hd_size: image.buffer.length,
+              aeskey: encodedAesKey,
+              mid_size: ciphertextSize,
+              hd_size: ciphertextSize,
             },
           },
         ],
