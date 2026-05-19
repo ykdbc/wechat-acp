@@ -114,6 +114,13 @@ export async function startMonitor(opts: MonitorOpts): Promise<void> {
         getUpdatesBuf = resp.get_updates_buf;
       }
 
+      if (resp.msgs?.length) {
+        log(`getUpdates returned ${resp.msgs.length} message(s)`);
+        for (const msg of resp.msgs) {
+          log(`Update summary: ${summarizeMessage(msg)}`);
+        }
+      }
+
       for (const msg of resp.msgs ?? []) {
         onMessage(msg);
       }
@@ -133,4 +140,31 @@ export async function startMonitor(opts: MonitorOpts): Promise<void> {
       }
     }
   }
+}
+
+function summarizeMessage(msg: WeixinMessage): string {
+  const itemTypes = (msg.item_list ?? []).map((item) => item.type).join(",");
+  return [
+    `message_type=${msg.message_type}`,
+    `state=${msg.message_state}`,
+    `from=${msg.from_user_id ? "yes" : "no"}`,
+    `context=${msg.context_token ? "yes" : "no"}`,
+    `group=${msg.group_id ? "yes" : "no"}`,
+    `items=[${itemTypes}]`,
+    `text=${previewText(extractText(msg))}`,
+  ].join(" ");
+}
+
+function extractText(msg: WeixinMessage): string {
+  for (const item of msg.item_list ?? []) {
+    if (item.text_item?.text) return item.text_item.text;
+    if (item.voice_item?.text) return item.voice_item.text;
+  }
+  return "";
+}
+
+function previewText(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "<none>";
+  return compact.length > 80 ? `${compact.substring(0, 80)}...` : compact;
 }

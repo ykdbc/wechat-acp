@@ -53,6 +53,7 @@ async function apiPost<T>(
   body: Record<string, unknown>,
   token?: string,
   timeoutMs = 15_000,
+  abortFallback?: T,
 ): Promise<T> {
   const url = `${baseUrl.replace(/\/$/, "")}/${endpoint}`;
   const payload = { ...body, base_info: buildBaseInfo() };
@@ -75,7 +76,8 @@ async function apiPost<T>(
   } catch (err) {
     clearTimeout(timer);
     if ((err as Error).name === "AbortError") {
-      return { ret: 0, msgs: [] } as T;
+      if (abortFallback !== undefined) return abortFallback;
+      throw new Error(`${endpoint} timed out after ${timeoutMs}ms`);
     }
     throw err;
   }
@@ -93,6 +95,7 @@ export async function getUpdates(params: {
     { get_updates_buf: params.get_updates_buf },
     params.token,
     params.timeoutMs ?? 38_000,
+    { ret: 0, msgs: [] },
   );
 }
 
