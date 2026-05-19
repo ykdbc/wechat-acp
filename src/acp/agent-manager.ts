@@ -2,7 +2,7 @@
  * Spawn and manage ACP agent subprocesses.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { Writable, Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import packageJson from "../../package.json" with { type: "json" };
@@ -94,11 +94,41 @@ export async function spawnAgent(params: {
 }
 
 export function killAgent(proc: ChildProcess): void {
-  if (!proc.killed) {
-    proc.kill("SIGTERM");
-    // Force kill after 5s if still alive
-    setTimeout(() => {
-      if (!proc.killed) proc.kill("SIGKILL");
-    }, 5_000).unref();
+  const pid = proc.pid;
+  if (!pid) {
+    if (!proc.killed) proc.kill("SIGTERM");
+    return;
+  }
+
+  killProcessTree(pid, "SIGTERM");
+  setTimeout(() => killProcessTree(pid, "SIGKILL"), 5_000).unref();
+}
+
+function killProcessTree(pid: number, signal: NodeJS.Signals): void {
+  for (const childPid of childPids(pid)) {
+    killProcessTree(childPid, signal);
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw err;
+    }
+  }
+}
+
+function childPids(pid: number): number[] {
+  if (process.platform === "win32") return [];
+
+  try {
+    const out = execFileSync("pgrep", ["-P", String(pid)], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!out) return [];
+    return out.split(/\s+/).map((value) => Number(value)).filter(Number.isFinite);
+  } catch {
+    return [];
   }
 }

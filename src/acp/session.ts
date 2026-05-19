@@ -43,6 +43,7 @@ export interface SessionManagerOpts {
 
 export class SessionManager {
   private sessions = new Map<string, UserSession>();
+  private pendingSessions = new Map<string, Promise<UserSession>>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private opts: SessionManagerOpts;
   private aborted = false;
@@ -64,6 +65,16 @@ export class SessionManager {
       this.cleanupTimer = null;
     }
     // Kill all agent processes
+    for (const [userId, pending] of this.pendingSessions) {
+      pending
+        .then((session) => {
+          this.opts.log(`Stopping pending session for ${userId}`);
+          killAgent(session.agentInfo.process);
+        })
+        .catch(() => {});
+    }
+    this.pendingSessions.clear();
+
     for (const [userId, session] of this.sessions) {
       this.opts.log(`Stopping session for ${userId}`);
       killAgent(session.agentInfo.process);
@@ -75,13 +86,7 @@ export class SessionManager {
     let session = this.sessions.get(userId);
 
     if (!session) {
-      if (this.sessions.size >= this.opts.maxConcurrentUsers) {
-        // Evict oldest idle session
-        this.evictOldest();
-      }
-
-      session = await this.createSession(userId, message.contextToken);
-      this.sessions.set(userId, session);
+      session = await this.getOrCreateSession(userId, message.contextToken);
     }
 
     // Always update contextToken to the latest
@@ -103,7 +108,39 @@ export class SessionManager {
   }
 
   get activeCount(): number {
-    return this.sessions.size;
+    return this.sessions.size + this.pendingSessions.size;
+  }
+
+  private async getOrCreateSession(userId: string, contextToken: string): Promise<UserSession> {
+    const existing = this.sessions.get(userId);
+    if (existing) return existing;
+
+    let pending = this.pendingSessions.get(userId);
+    if (!pending) {
+      if (this.activeCount >= this.opts.maxConcurrentUsers) {
+        // Evict oldest idle session
+        this.evictOldest();
+      }
+
+      pending = this.createSession(userId, contextToken);
+      this.pendingSessions.set(userId, pending);
+    }
+
+    try {
+      const session = await pending;
+      if (this.aborted) {
+        killAgent(session.agentInfo.process);
+        throw new Error("Session manager stopped");
+      }
+      if (!this.sessions.has(userId)) {
+        this.sessions.set(userId, session);
+      }
+      return session;
+    } finally {
+      if (this.pendingSessions.get(userId) === pending) {
+        this.pendingSessions.delete(userId);
+      }
+    }
   }
 
   private async createSession(userId: string, contextToken: string): Promise<UserSession> {
