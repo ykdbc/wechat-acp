@@ -80,6 +80,14 @@ export interface WeChatAcpConfig {
     idleTimeoutMs: number;
     maxConcurrentUsers: number;
   };
+  imageGeneration: {
+    enabled: boolean;
+    baseUrl: string;
+    model: string;
+    quality: string;
+    size: string;
+    outputDir: string;
+  };
   daemon: {
     enabled: boolean;
     logFile: string;
@@ -136,6 +144,14 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
     session: {
       idleTimeoutMs: 1440 * 60_000, // 24 hours
       maxConcurrentUsers: 10,
+    },
+    imageGeneration: {
+      enabled: process.env.WECHAT_ACP_IMAGE_GENERATION !== "0",
+      baseUrl: process.env.WECHAT_ACP_IMAGE_BASE_URL ?? "https://api.openai.com",
+      model: process.env.WECHAT_ACP_IMAGE_MODEL ?? "gpt-image-2",
+      quality: process.env.WECHAT_ACP_IMAGE_QUALITY ?? "medium",
+      size: process.env.WECHAT_ACP_IMAGE_SIZE ?? "1024x1024",
+      outputDir: process.env.WECHAT_ACP_IMAGE_OUTPUT_DIR ?? path.join(storageDir, "generated-images"),
     },
     daemon: {
       enabled: false,

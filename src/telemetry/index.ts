@@ -4,7 +4,7 @@
  * Privacy:
  *   - No message content, filenames, transcripts, URLs, tokens, or paths are collected.
  *   - WeChat user IDs are sha256-hashed with a per-install salt and truncated.
- *   - Only the 9 categorical events declared in `EventName` are emitted.
+ *   - Only the categorical events declared in `EventName` are emitted.
  *
  * Disable: set environment variable `WECHAT_ACP_TELEMETRY=0` (or `false` / `off`).
  */
@@ -30,6 +30,7 @@ export type EventName =
   | "message.received"
   | "session.created"
   | "prompt.completed"
+  | "image.generated"
   | "reply.sent";
 
 type PropValue = string | number | boolean;

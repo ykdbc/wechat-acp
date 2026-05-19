@@ -8,14 +8,20 @@
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
 import { sendTextMessage, splitText } from "./weixin/send.js";
+import { sendImageMessage } from "./weixin/image-send.js";
 import { sendTyping, getConfig } from "./weixin/api.js";
-import { TypingStatus, MessageType } from "./weixin/types.js";
-import type { WeixinMessage } from "./weixin/types.js";
+import { TypingStatus, MessageType, MessageItemType } from "./weixin/types.js";
+import type { WeixinMessage, MessageItem } from "./weixin/types.js";
 import { SessionManager } from "./acp/session.js";
 import { weixinMessageToPrompt } from "./adapter/inbound.js";
 import { formatForWeChat } from "./adapter/outbound.js";
 import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
+import {
+  extractImagePrompt,
+  generateImage,
+  isImageGenerationRequest,
+} from "./image/generation.js";
 
 const TEXT_CHUNK_LIMIT = 4000;
 
@@ -140,6 +146,12 @@ export class WeChatAcpBridge {
     userId: string,
     contextToken: string,
   ): Promise<void> {
+    const text = this.extractText(msg.item_list);
+    if (this.config.imageGeneration.enabled && isImageGenerationRequest(text)) {
+      await this.handleImageGeneration(userId, contextToken, text);
+      return;
+    }
+
     const prompt = await weixinMessageToPrompt(
       msg,
       this.config.wechat.cdnBaseUrl,
@@ -147,6 +159,43 @@ export class WeChatAcpBridge {
     );
 
     await this.sessionManager!.enqueue(userId, { prompt, contextToken });
+  }
+
+  private async handleImageGeneration(
+    userId: string,
+    contextToken: string,
+    text: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await this.sendTypingIndicator(userId, contextToken);
+      const image = await generateImage(
+        extractImagePrompt(text),
+        this.config.imageGeneration,
+        this.log,
+      );
+
+      await sendImageMessage(userId, image, {
+        baseUrl: this.tokenData!.baseUrl,
+        cdnBaseUrl: this.config.wechat.cdnBaseUrl,
+        token: this.tokenData!.token,
+        contextToken,
+      });
+
+      trackEvent("image.generated", {
+        userIdHash: hashUserId(userId),
+        model: this.config.imageGeneration.model,
+        bytes: image.buffer.length,
+        durationMs: Date.now() - startedAt,
+      });
+      this.log(`Generated image sent to ${userId}: ${image.path}`);
+    } catch (err) {
+      this.log(`Image generation failed for ${userId}: ${String(err)}`);
+      trackException(err, "image_generation");
+      await this.sendReply(userId, contextToken, `图片生成失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
   }
 
   private async sendReply(userId: string, contextToken: string, text: string): Promise<void> {
@@ -249,6 +298,18 @@ export class WeChatAcpBridge {
       if (item.type === 5) return "[video]";
     }
     return "[empty]";
+  }
+
+  private extractText(itemList?: MessageItem[]): string {
+    for (const item of itemList ?? []) {
+      if (item.type === MessageItemType.TEXT && item.text_item?.text) {
+        return item.text_item.text;
+      }
+      if (item.type === MessageItemType.VOICE && item.voice_item?.text) {
+        return item.voice_item.text;
+      }
+    }
+    return "";
   }
 
   private messageKind(msg: WeixinMessage): string {
