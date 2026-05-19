@@ -9,6 +9,7 @@ import type {
   BaseInfo,
   GetUpdatesResp,
   SendMessageReq,
+  SendMessageResp,
   GetUploadUrlReq,
   GetUploadUrlResp,
   SendTypingReq,
@@ -99,8 +100,22 @@ export async function sendMessage(params: {
   baseUrl: string;
   token?: string;
   body: SendMessageReq;
-}): Promise<void> {
-  await apiPost(params.baseUrl, "ilink/bot/sendmessage", params.body as unknown as Record<string, unknown>, params.token);
+}): Promise<SendMessageResp> {
+  const resp = await apiPost<SendMessageResp>(
+    params.baseUrl,
+    "ilink/bot/sendmessage",
+    params.body as unknown as Record<string, unknown>,
+    params.token,
+  );
+  const isError =
+    (resp.ret !== undefined && resp.ret !== 0) ||
+    (resp.errcode !== undefined && resp.errcode !== 0);
+  if (isError) {
+    throw new Error(
+      `sendMessage failed: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ""}`,
+    );
+  }
+  return resp;
 }
 
 export async function getUploadUrl(params: {

@@ -205,11 +205,12 @@ export class WeChatAcpBridge {
 
     try {
       for (const segment of segments) {
-        await sendTextMessage(userId, segment, {
+        const clientId = await sendTextMessage(userId, segment, {
           baseUrl: this.tokenData!.baseUrl,
           token: this.tokenData!.token,
           contextToken,
         });
+        this.log(`Sent text reply to ${userId}: ${clientId} (${segment.length} chars)`);
       }
       trackEvent("reply.sent", {
         userIdHash: hashUserId(userId),

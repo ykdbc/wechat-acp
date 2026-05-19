@@ -138,6 +138,12 @@ export interface SendMessageReq {
   msg?: WeixinMessage;
 }
 
+export interface SendMessageResp {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+}
+
 export interface GetUploadUrlReq {
   filekey?: string;
   media_type?: number;
