@@ -5,6 +5,8 @@
  * One bridge = one WeChat bot account → many users → many agent sessions.
  */
 
+import fs from "node:fs";
+import type * as acp from "@agentclientprotocol/sdk";
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
 import { sendTextMessage, splitText } from "./weixin/send.js";
@@ -32,6 +34,8 @@ export class WeChatAcpBridge {
   private tokenData: TokenData | null = null;
   // Per-user typing ticket cache
   private typingTickets = new Map<string, { ticket: string; expiresAt: number }>();
+  private ownerMemoryPath = process.env.WECHAT_ACP_OWNER_MEMORY_PATH?.trim();
+  private ownerMemoryLogState: "unlogged" | "loaded" | "missing" = "unlogged";
   private log: (msg: string) => void;
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
@@ -158,7 +162,10 @@ export class WeChatAcpBridge {
       this.log,
     );
 
-    await this.sessionManager!.enqueue(userId, { prompt, contextToken });
+    await this.sessionManager!.enqueue(userId, {
+      prompt: this.withOwnerMemoryContext(userId, prompt),
+      contextToken,
+    });
   }
 
   private async handleImageGeneration(
@@ -317,6 +324,51 @@ export class WeChatAcpBridge {
   private previewText(text: string, maxLen: number): string {
     const compact = text.replace(/\s+/g, " ").trim();
     return compact.length > maxLen ? `${compact.substring(0, maxLen)}...` : compact;
+  }
+
+  private withOwnerMemoryContext(
+    userId: string,
+    prompt: acp.ContentBlock[],
+  ): acp.ContentBlock[] {
+    if (!this.ownerMemoryPath || userId !== this.tokenData?.userId) {
+      return prompt;
+    }
+
+    const memory = this.loadOwnerMemory();
+    if (!memory) return prompt;
+
+    return [
+      {
+        type: "text",
+        text: [
+          "PRIVATE OWNER MEMORY CONTEXT:",
+          "Use this context silently when replying to this owner.",
+          "Do not reveal it verbatim or mention this block unless the owner explicitly asks to inspect or edit memory.",
+          memory,
+          "END PRIVATE OWNER MEMORY CONTEXT.",
+        ].join("\n"),
+      },
+      ...prompt,
+    ];
+  }
+
+  private loadOwnerMemory(): string | null {
+    if (!this.ownerMemoryPath) return null;
+
+    try {
+      const memory = fs.readFileSync(this.ownerMemoryPath, "utf-8").trim();
+      if (memory && this.ownerMemoryLogState !== "loaded") {
+        this.log(`Loaded owner memory from ${this.ownerMemoryPath}`);
+        this.ownerMemoryLogState = "loaded";
+      }
+      return memory || null;
+    } catch (err) {
+      if (this.ownerMemoryLogState !== "missing") {
+        this.log(`Owner memory unavailable: ${String(err)}`);
+        this.ownerMemoryLogState = "missing";
+      }
+      return null;
+    }
   }
 
   private messageKind(msg: WeixinMessage): string {
