@@ -202,6 +202,7 @@ export class WeChatAcpBridge {
     const formatted = formatForWeChat(text);
     const segments = splitText(formatted, TEXT_CHUNK_LIMIT);
     const startedAt = Date.now();
+    this.log(`Reply preview to ${userId}: ${this.previewText(formatted, 300)}`);
 
     try {
       for (const segment of segments) {
@@ -311,6 +312,11 @@ export class WeChatAcpBridge {
       }
     }
     return "";
+  }
+
+  private previewText(text: string, maxLen: number): string {
+    const compact = text.replace(/\s+/g, " ").trim();
+    return compact.length > maxLen ? `${compact.substring(0, maxLen)}...` : compact;
   }
 
   private messageKind(msg: WeixinMessage): string {
