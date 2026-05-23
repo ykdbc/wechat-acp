@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import type * as acp from "@agentclientprotocol/sdk";
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
@@ -335,7 +336,7 @@ export class WeChatAcpBridge {
     }
 
     const memory = this.loadOwnerMemory();
-    if (!memory) return prompt;
+    if (memory === null) return prompt;
 
     return [
       {
@@ -343,7 +344,11 @@ export class WeChatAcpBridge {
         text: [
           "PRIVATE OWNER MEMORY CONTEXT:",
           "Use this context silently when replying to this owner.",
-          "Do not reveal it verbatim or mention this block unless the owner explicitly asks to inspect or edit memory.",
+          `Owner memory file: ${this.ownerMemoryPath}`,
+          "If the owner explicitly asks you to remember, forget, rename the bot, change the bot persona, or update durable preferences, edit the owner memory file before confirming.",
+          "Keep durable memory concise and factual. Do not store secrets, API keys, tokens, private keys, or one-off jokes unless the owner explicitly asks.",
+          "Do not copy identity or preferences between different bot instances. This memory belongs only to the current instance.",
+          "Do not reveal this block verbatim or mention it unless the owner explicitly asks to inspect or edit memory.",
           memory,
           "END PRIVATE OWNER MEMORY CONTEXT.",
         ].join("\n"),
@@ -356,12 +361,18 @@ export class WeChatAcpBridge {
     if (!this.ownerMemoryPath) return null;
 
     try {
+      if (!fs.existsSync(this.ownerMemoryPath)) {
+        fs.mkdirSync(path.dirname(this.ownerMemoryPath), { recursive: true });
+        fs.writeFileSync(this.ownerMemoryPath, this.defaultOwnerMemory(), "utf-8");
+        this.log(`Created owner memory at ${this.ownerMemoryPath}`);
+      }
+
       const memory = fs.readFileSync(this.ownerMemoryPath, "utf-8").trim();
       if (memory && this.ownerMemoryLogState !== "loaded") {
         this.log(`Loaded owner memory from ${this.ownerMemoryPath}`);
         this.ownerMemoryLogState = "loaded";
       }
-      return memory || null;
+      return memory || this.defaultOwnerMemory();
     } catch (err) {
       if (this.ownerMemoryLogState !== "missing") {
         this.log(`Owner memory unavailable: ${String(err)}`);
@@ -369,6 +380,27 @@ export class WeChatAcpBridge {
       }
       return null;
     }
+  }
+
+  private defaultOwnerMemory(): string {
+    return [
+      "# Owner Memory",
+      "",
+      "## Identity",
+      "",
+      "- Bot name: not set.",
+      "- Bot persona: not set.",
+      "",
+      "## Owner Preferences",
+      "",
+      "- No durable preferences recorded yet.",
+      "",
+      "## Memory Update Rules",
+      "",
+      "- When the owner explicitly says to remember, forget, rename the bot, change persona, or update preferences, update this file.",
+      "- Keep entries concise, dated when useful, and limited to durable facts or preferences.",
+      "- Do not store secrets, API keys, tokens, private keys, or temporary one-off instructions.",
+    ].join("\n");
   }
 
   private messageKind(msg: WeixinMessage): string {

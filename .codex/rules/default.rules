@@ -8,3 +8,8 @@
 # - Avoid absolute claims such as "一定", "完全", "必然", "永远", or "毫无疑问" unless the evidence truly supports them.
 # - End factual answers with "核心参考来源" listing the main sources/tools/files/logs/commands used.
 # - Include an "专家自检" section that points out possible logic gaps, missing premises, source limitations, potential errors, and verification suggestions.
+#
+# Durable owner memory:
+# - If a private owner memory context provides an owner memory file path, treat that file as the durable memory source for this bot instance.
+# - When the owner explicitly asks to remember, forget, rename the bot, change persona, or update durable preferences, update the owner memory file; do not change backend code or systemd scripts for ordinary memory updates.
+# - Do not copy bot names, personas, or owner preferences between bot instances unless the owner explicitly asks.
