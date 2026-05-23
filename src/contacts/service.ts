@@ -81,6 +81,51 @@ export async function createContact(
   };
 }
 
+export async function appendPhoneToContact(
+  contact: Pick<ContactRecord, "url" | "etag">,
+  phone: string,
+  config: ContactsIntegrationConfig,
+): Promise<ContactRecord> {
+  ensureCredentials(config);
+  const existing = await getContactByUrl(contact.url, config);
+  if (!existing) {
+    throw new Error("未找到要更新的联系人");
+  }
+
+  const normalizedPhone = phone.replace(/[^\d+]/g, "");
+  const currentPhones = normalizedList(existing.phones);
+  const dedupKey = normalizedPhone.replace(/[^\d+]/g, "");
+  const alreadyExists = currentPhones.some((value) => value.replace(/[^\d+]/g, "") === dedupKey);
+  const nextPhones = alreadyExists ? currentPhones : [...currentPhones, normalizedPhone];
+
+  const vcard = buildVCard(existing.uid, {
+    fullName: existing.fullName,
+    phones: nextPhones,
+    emails: existing.emails,
+    note: existing.note,
+  });
+
+  const response = await fetch(existing.url, {
+    method: "PUT",
+    headers: {
+      Authorization: basicAuth(config.username, config.password),
+      "Content-Type": "text/vcard; charset=utf-8",
+      ...(existing.etag ? { "If-Match": existing.etag } : {}),
+    },
+    body: vcard,
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`联系人更新失败：HTTP ${response.status}: ${compact(text)}`);
+  }
+
+  return {
+    ...existing,
+    phones: nextPhones,
+    etag: response.headers.get("etag") ?? existing.etag,
+  };
+}
+
 export async function deleteContact(
   contact: Pick<ContactRecord, "url" | "etag">,
   config: ContactsIntegrationConfig,
@@ -118,6 +163,11 @@ export async function listContacts(config: ContactsIntegrationConfig): Promise<C
   return responses
     .map((match) => parseContactResponse(match[1] ?? "", addressBookUrl))
     .filter((value): value is ContactRecord => !!value);
+}
+
+async function getContactByUrl(url: string, config: ContactsIntegrationConfig): Promise<ContactRecord | null> {
+  const all = await listContacts(config);
+  return all.find((contact) => contact.url === url) ?? null;
 }
 
 async function resolveAddressBookUrl(config: ContactsIntegrationConfig): Promise<string> {

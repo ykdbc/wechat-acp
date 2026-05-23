@@ -1,5 +1,6 @@
 export type NativeAction =
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
+  | { type: "contact.append_phone"; fullName: string; phone: string }
   | { type: "contact.lookup"; query: string }
   | { type: "contact.delete"; query: string }
   | { type: "map.lookup"; query: string };
@@ -8,6 +9,7 @@ export function parseNativeAction(text: string): NativeAction | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   return parseContactCreate(trimmed)
+    ?? parseContactAppendPhone(trimmed)
     ?? parseContactLookup(trimmed)
     ?? parseContactDelete(trimmed)
     ?? parseMapLookup(trimmed);
@@ -38,6 +40,28 @@ function parseContactCreate(text: string): NativeAction | null {
       fullName: cleanup(namedMatch[1]),
       phone: normalizePhone(namedMatch[2]),
       note: namedMatch[3]?.trim() || undefined,
+    };
+  }
+  return null;
+}
+
+function parseContactAppendPhone(text: string): NativeAction | null {
+  const patterns = [
+    /^([+\d][\d\s-]{5,})\s*(?:添加到|加到|加入到)\s*(.+)$/i,
+    /^(?:把)?([+\d][\d\s-]{5,})(?:这个)?(?:号码|电话|手机号)?(?:添加到|加到|加入到)\s*(.+)$/i,
+    /^(?:给)?(.+?)(?:再加|追加|添加)(?:一个)?(?:号码|电话|手机号)[:： ]*([+\d][\d\s-]{5,})$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1] || !match?.[2]) continue;
+    const firstLooksLikePhone = /[+\d]/.test(match[1]);
+    const phone = firstLooksLikePhone ? normalizePhone(match[1]) : normalizePhone(match[2]);
+    const fullName = firstLooksLikePhone ? cleanup(match[2]) : cleanup(match[1]);
+    if (!phone || !fullName) continue;
+    return {
+      type: "contact.append_phone",
+      fullName,
+      phone,
     };
   }
   return null;

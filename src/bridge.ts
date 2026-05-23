@@ -22,7 +22,7 @@ import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 import { extractImagePrompt, generateImage } from "./image/generation.js";
 import { createCalendarEvent } from "./calendar/caldav.js";
-import { createContact, deleteContact, findContacts } from "./contacts/service.js";
+import { appendPhoneToContact, createContact, deleteContact, findContacts } from "./contacts/service.js";
 import { buildAppleMapsUrl } from "./maps/service.js";
 import {
   buildNativeActionInstruction,
@@ -156,6 +156,7 @@ export class WeChatAcpBridge {
     userId: string,
     contextToken: string,
   ): Promise<void> {
+    const text = this.extractText(msg.item_list);
     const prompt = await weixinMessageToPrompt(
       msg,
       this.config.wechat.cdnBaseUrl,
@@ -165,6 +166,7 @@ export class WeChatAcpBridge {
     await this.sessionManager!.enqueue(userId, {
       prompt: this.withNativeActionContext(this.withOwnerMemoryContext(userId, prompt)),
       contextToken,
+      mode: isAppleActionDomain(text) ? "native_action" : "default",
     });
   }
 
@@ -229,6 +231,9 @@ export class WeChatAcpBridge {
     switch (action.type) {
       case "contact.create":
         await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
+        return;
+      case "contact.append_phone":
+        await this.handleContactAppendPhone(userId, contextToken, action.fullName, action.phone);
         return;
       case "contact.lookup":
         await this.handleContactLookup(userId, contextToken, action.query);
@@ -298,11 +303,44 @@ export class WeChatAcpBridge {
         return;
       }
       await this.sendTypingIndicator(userId, contextToken);
-      const created = await createContact({
-        fullName,
-        phones: [phone],
-        note,
-      }, this.config.contactsIntegration);
+      const matches = await findContacts(fullName, this.config.contactsIntegration);
+      if (matches.length === 0) {
+        const created = await createContact({
+          fullName,
+          phones: [phone],
+          note,
+        }, this.config.contactsIntegration);
+        trackEvent("contact.created", {
+          userIdHash: hashUserId(userId),
+          durationMs: Date.now() - startedAt,
+        });
+        await this.sendReply(
+          userId,
+          contextToken,
+          [
+            `联系人已新建：${created.fullName}`,
+            created.phones?.[0] ? `电话：${created.phones[0]}` : "",
+            created.note ? `备注：${created.note}` : "",
+          ].filter(Boolean).join("\n"),
+        );
+        return;
+      }
+
+      if (matches.length > 1) {
+        await this.sendReply(
+          userId,
+          contextToken,
+          [
+            `发现 ${matches.length} 个同名联系人，先不自动新增，请先明确你要更新的是哪一个：`,
+            ...matches.slice(0, 8).map((contact, index) =>
+              `${index + 1}. ${contact.fullName}${contact.phones?.length ? ` / ${contact.phones.join(" / ")}` : ""}`,
+            ),
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const updated = await appendPhoneToContact(matches[0]!, phone, this.config.contactsIntegration);
       trackEvent("contact.created", {
         userIdHash: hashUserId(userId),
         durationMs: Date.now() - startedAt,
@@ -311,9 +349,9 @@ export class WeChatAcpBridge {
         userId,
         contextToken,
         [
-          `联系人已添加：${created.fullName}`,
-          created.phones?.[0] ? `电话：${created.phones[0]}` : "",
-          created.note ? `备注：${created.note}` : "",
+          `已追加到现有联系人：${updated.fullName}`,
+          `号码数量：${updated.phones?.length ?? 0}`,
+          updated.phones?.length ? `电话：${updated.phones.join(" / ")}` : "",
         ].filter(Boolean).join("\n"),
       );
     } catch (err) {
@@ -365,6 +403,61 @@ export class WeChatAcpBridge {
       this.log(`Contact lookup failed for ${userId}: ${String(err)}`);
       trackException(err, "contact_lookup");
       await this.sendReply(userId, contextToken, `联系人查询失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactAppendPhone(
+    userId: string,
+    contextToken: string,
+    fullName: string,
+    phone: string,
+  ): Promise<void> {
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const matches = await findContacts(fullName, this.config.contactsIntegration);
+      if (matches.length === 0) {
+        const created = await createContact({ fullName, phones: [phone] }, this.config.contactsIntegration);
+        await this.sendReply(
+          userId,
+          contextToken,
+          `未找到现有联系人，已新建：${created.fullName} / ${created.phones?.[0] ?? phone}`,
+        );
+        return;
+      }
+      if (matches.length > 1) {
+        await this.sendReply(
+          userId,
+          contextToken,
+          [
+            `找到 ${matches.length} 个同名联系人，请先明确你要更新的是哪一个：`,
+            ...matches.slice(0, 8).map((contact, index) =>
+              `${index + 1}. ${contact.fullName}${contact.phones?.length ? ` / ${contact.phones.join(" / ")}` : ""}`,
+            ),
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const updated = await appendPhoneToContact(matches[0]!, phone, this.config.contactsIntegration);
+      await this.sendReply(
+        userId,
+        contextToken,
+        [
+          `联系人已更新：${updated.fullName}`,
+          `号码数量：${updated.phones?.length ?? 0}`,
+          updated.phones?.length ? `电话：${updated.phones.join(" / ")}` : "",
+        ].filter(Boolean).join("\n"),
+      );
+    } catch (err) {
+      this.log(`Contact append phone failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_append_phone");
+      await this.sendReply(userId, contextToken, `联系人更新失败：${String(err)}`);
     } finally {
       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
     }
@@ -668,4 +761,14 @@ export class WeChatAcpBridge {
     }
     return "empty";
   }
+}
+
+function isAppleActionDomain(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return [
+    /(?:通讯录|联系人|电话|手机号|号码)/,
+    /(?:日历|日程|提醒|节日|节假日)/,
+    /(?:地图|位置|地址|导航|路线)/,
+  ].some((pattern) => pattern.test(normalized));
 }
