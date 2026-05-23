@@ -265,6 +265,9 @@ async function main(): Promise<void> {
     Object.assign(config.agents, fileConfig.agents ?? {});
     Object.assign(config.session, fileConfig.session ?? {});
     Object.assign(config.imageGeneration, fileConfig.imageGeneration ?? {});
+    Object.assign(config.calendarIntegration, fileConfig.calendarIntegration ?? {});
+    Object.assign(config.contactsIntegration, fileConfig.contactsIntegration ?? {});
+    Object.assign(config.mapsIntegration, fileConfig.mapsIntegration ?? {});
     Object.assign(config.daemon, fileConfig.daemon ?? {});
     Object.assign(config.storage, fileConfig.storage ?? {});
   }

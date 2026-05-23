@@ -25,6 +25,21 @@ import {
   generateImage,
   isImageGenerationRequest,
 } from "./image/generation.js";
+import {
+  calendarCommandUsage,
+  isCalendarCreateRequest,
+  parseCalendarCreateRequest,
+} from "./calendar/intent.js";
+import { createCalendarEvent } from "./calendar/caldav.js";
+import { createContact, deleteContact, findContacts } from "./contacts/service.js";
+import { buildAppleMapsUrl } from "./maps/service.js";
+import { parseNativeAction, type NativeAction } from "./native/intent.js";
+import {
+  buildNativeActionInstruction,
+  calendarDraftFromAction,
+  extractNativeActionEnvelope,
+  type NativeActionEnvelope,
+} from "./native/actions.js";
 
 const TEXT_CHUNK_LIMIT = 4000;
 
@@ -97,7 +112,7 @@ export class WeChatAcpBridge {
       maxConcurrentUsers: this.config.session.maxConcurrentUsers,
       showThoughts: this.config.agent.showThoughts,
       log: this.log,
-      onReply: (userId, contextToken, text) => this.sendReply(userId, contextToken, text),
+      onReply: (userId, contextToken, text) => this.handleAgentReply(userId, contextToken, text),
       sendTyping: (userId, contextToken) => this.sendTypingIndicator(userId, contextToken),
     });
     this.sessionManager.start();
@@ -152,8 +167,17 @@ export class WeChatAcpBridge {
     contextToken: string,
   ): Promise<void> {
     const text = this.extractText(msg.item_list);
+    const nativeAction = parseNativeAction(text);
+    if (nativeAction) {
+      await this.handleNativeAction(userId, contextToken, nativeAction);
+      return;
+    }
     if (this.config.imageGeneration.enabled && isImageGenerationRequest(text)) {
       await this.handleImageGeneration(userId, contextToken, text);
+      return;
+    }
+    if (this.config.calendarIntegration.enabled && isCalendarCreateRequest(text)) {
+      await this.handleCalendarCreate(userId, contextToken, text);
       return;
     }
 
@@ -164,9 +188,24 @@ export class WeChatAcpBridge {
     );
 
     await this.sessionManager!.enqueue(userId, {
-      prompt: this.withOwnerMemoryContext(userId, prompt),
+      prompt: this.withNativeActionContext(this.withOwnerMemoryContext(userId, prompt)),
       contextToken,
     });
+  }
+
+  private async handleAgentReply(userId: string, contextToken: string, text: string): Promise<void> {
+    if (text.startsWith("💭 [Thinking]")) {
+      await this.sendReply(userId, contextToken, text);
+      return;
+    }
+
+    const parsed = extractNativeActionEnvelope(text);
+    if (!parsed) {
+      await this.sendReply(userId, contextToken, text);
+      return;
+    }
+
+    await this.handleNativeActionEnvelope(userId, contextToken, parsed.action, parsed.remainingText);
   }
 
   private async handleImageGeneration(
@@ -203,6 +242,250 @@ export class WeChatAcpBridge {
       await this.sendReply(userId, contextToken, `图片生成失败：${String(err)}`);
     } finally {
       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleNativeAction(
+    userId: string,
+    contextToken: string,
+    action: NativeAction,
+  ): Promise<void> {
+    switch (action.type) {
+      case "contact.create":
+        await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
+        return;
+      case "contact.delete":
+        await this.handleContactDelete(userId, contextToken, action.query);
+        return;
+      case "map.lookup":
+        await this.handleMapLookup(userId, contextToken, action.query);
+        return;
+    }
+  }
+
+  private async handleNativeActionEnvelope(
+    userId: string,
+    contextToken: string,
+    action: NativeActionEnvelope,
+    remainingText: string,
+  ): Promise<void> {
+    switch (action.type) {
+      case "contact.create":
+        await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
+        return;
+      case "contact.delete":
+        await this.handleContactDelete(userId, contextToken, action.query);
+        return;
+      case "map.lookup":
+        await this.handleMapLookup(userId, contextToken, action.query);
+        return;
+      case "calendar.create":
+        await this.handleCalendarCreateFromAi(userId, contextToken, action, remainingText);
+        return;
+    }
+  }
+
+  private async handleCalendarCreate(
+    userId: string,
+    contextToken: string,
+    text: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      const parsed = parseCalendarCreateRequest(text);
+      if (!parsed.ok) {
+        await this.sendReply(userId, contextToken, parsed.error);
+        return;
+      }
+
+      await this.sendTypingIndicator(userId, contextToken);
+      const created = await createCalendarEvent(
+        parsed.draft,
+        this.config.calendarIntegration,
+        this.log,
+      );
+
+      trackEvent("calendar.event_created", {
+        userIdHash: hashUserId(userId),
+        durationMs: Date.now() - startedAt,
+      });
+
+      await this.sendReply(
+        userId,
+        contextToken,
+        [
+          `日历已写入：${parsed.draft.title}`,
+          `事件ID：${created.uid}`,
+          `日历地址：${created.calendarUrl}`,
+        ].join("\n"),
+      );
+    } catch (err) {
+      this.log(`Calendar create failed for ${userId}: ${String(err)}`);
+      trackException(err, "calendar_create");
+      await this.sendReply(
+        userId,
+        contextToken,
+        `日历写入失败：${String(err)}\n\n${calendarCommandUsage()}`,
+      );
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleCalendarCreateFromAi(
+    userId: string,
+    contextToken: string,
+    action: Extract<NativeActionEnvelope, { type: "calendar.create" }>,
+    remainingText: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      const draft = calendarDraftFromAction(action);
+      await this.sendTypingIndicator(userId, contextToken);
+      const created = await createCalendarEvent(
+        draft,
+        this.config.calendarIntegration,
+        this.log,
+      );
+
+      trackEvent("calendar.event_created", {
+        userIdHash: hashUserId(userId),
+        durationMs: Date.now() - startedAt,
+      });
+
+      const lines = [
+        `日历已写入：${draft.title}`,
+        action.reminderMinutesBefore ? `提醒：提前 ${action.reminderMinutesBefore} 分钟` : "",
+        `事件ID：${created.uid}`,
+      ].filter(Boolean);
+      if (remainingText.trim()) {
+        lines.push("", remainingText.trim());
+      }
+      await this.sendReply(userId, contextToken, lines.join("\n"));
+    } catch (err) {
+      this.log(`AI calendar create failed for ${userId}: ${String(err)}`);
+      trackException(err, "calendar_create_ai");
+      await this.sendReply(userId, contextToken, `日历写入失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactCreate(
+    userId: string,
+    contextToken: string,
+    fullName: string,
+    phone: string,
+    note?: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const created = await createContact({
+        fullName,
+        phones: [phone],
+        note,
+      }, this.config.contactsIntegration);
+      trackEvent("contact.created", {
+        userIdHash: hashUserId(userId),
+        durationMs: Date.now() - startedAt,
+      });
+      await this.sendReply(
+        userId,
+        contextToken,
+        [
+          `联系人已添加：${created.fullName}`,
+          created.phones?.[0] ? `电话：${created.phones[0]}` : "",
+          created.note ? `备注：${created.note}` : "",
+        ].filter(Boolean).join("\n"),
+      );
+    } catch (err) {
+      this.log(`Contact create failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_create");
+      await this.sendReply(userId, contextToken, `联系人添加失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactDelete(
+    userId: string,
+    contextToken: string,
+    query: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const matches = await findContacts(query, this.config.contactsIntegration);
+      if (matches.length === 0) {
+        await this.sendReply(userId, contextToken, `通讯录里没有找到“${query}”。`);
+        return;
+      }
+      if (matches.length > 1) {
+        await this.sendReply(
+          userId,
+          contextToken,
+          [
+            `找到 ${matches.length} 个候选，请把名字说得更完整一些：`,
+            ...matches.slice(0, 8).map((contact, index) =>
+              `${index + 1}. ${contact.fullName}${contact.phones?.[0] ? ` / ${contact.phones[0]}` : ""}`,
+            ),
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const target = matches[0]!;
+      await deleteContact(target, this.config.contactsIntegration);
+      trackEvent("contact.deleted", {
+        userIdHash: hashUserId(userId),
+        durationMs: Date.now() - startedAt,
+      });
+      await this.sendReply(
+        userId,
+        contextToken,
+        `联系人已删除：${target.fullName}${target.phones?.[0] ? ` / ${target.phones[0]}` : ""}`,
+      );
+    } catch (err) {
+      this.log(`Contact delete failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_delete");
+      await this.sendReply(userId, contextToken, `联系人删除失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleMapLookup(
+    userId: string,
+    contextToken: string,
+    query: string,
+  ): Promise<void> {
+    try {
+      if (!this.config.mapsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "地图能力未启用。");
+        return;
+      }
+      const mapUrl = buildAppleMapsUrl(query, this.config.mapsIntegration);
+      trackEvent("map.link_shared", {
+        userIdHash: hashUserId(userId),
+      });
+      await this.sendReply(
+        userId,
+        contextToken,
+        [`地图查询：${query}`, mapUrl].join("\n"),
+      );
+    } catch (err) {
+      this.log(`Map lookup failed for ${userId}: ${String(err)}`);
+      trackException(err, "map_lookup");
+      await this.sendReply(userId, contextToken, `地图查询失败：${String(err)}`);
     }
   }
 
@@ -352,6 +635,19 @@ export class WeChatAcpBridge {
           memory,
           "END PRIVATE OWNER MEMORY CONTEXT.",
         ].join("\n"),
+      },
+      ...prompt,
+    ];
+  }
+
+  private withNativeActionContext(prompt: acp.ContentBlock[]): acp.ContentBlock[] {
+    return [
+      {
+        type: "text",
+        text: buildNativeActionInstruction(
+          new Date(),
+          this.config.calendarIntegration.defaultTimeZone || "Asia/Shanghai",
+        ),
       },
       ...prompt,
     ];

@@ -1,0 +1,284 @@
+diff --git a/README.md b/README.md
+index c8b962f..4eee989 100644
+--- a/README.md
++++ b/README.md
+@@ -12,11 +12,12 @@ Bridge WeChat direct messages to any ACP-compatible AI agent.
+ 
+ - WeChat QR login with terminal QR rendering
+ - One ACP agent session per WeChat user
+-- Built-in ACP agent presets for common CLIs
+-- Custom raw agent command support
+-- Auto-allow permission requests from the agent
+-- Direct message only; group chats are ignored
+-- Background daemon mode
++- Built-in ACP agent presets for common CLIs
++- Custom raw agent command support
++- Auto-allow permission requests from the agent
++- Optional iCloud Calendar write-back via CalDAV
++- Direct message only; group chats are ignored
++- Background daemon mode
+ 
+ ## Requirements
+ 
+@@ -139,7 +140,7 @@ Example:
+ }
+ ```
+ 
+-You can also override or add agent presets:
++You can also override or add agent presets:
+ 
+ ```json
+ {
+@@ -154,8 +155,61 @@ You can also override or add agent presets:
+       "args": ["my-agent-cli", "--acp"]
+     }
+   }
+-}
+-```
++}
++```
++
++You can also enable direct calendar write-back. The current implementation uses CalDAV, which works with iCloud Calendar when you provide your Apple ID email plus an app-specific password.
++
++Example:
++
++```json
++{
++  "calendarIntegration": {
++    "enabled": true,
++    "provider": "caldav",
++    "discoveryUrl": "https://caldav.icloud.com",
++    "username": "your-apple-id@example.com",
++    "password": "your-app-specific-password",
++    "calendarName": "Home",
++    "defaultTimeZone": "Asia/Shanghai",
++    "defaultDurationMinutes": 60
++  }
++}
++```
++
++Environment variables are also supported:
++
++- `WECHAT_ACP_CALENDAR_ENABLED=1`
++- `WECHAT_ACP_CALENDAR_USERNAME=...`
++- `WECHAT_ACP_CALENDAR_PASSWORD=...`
++- `WECHAT_ACP_CALENDAR_NAME=Home`
++- `WECHAT_ACP_CALENDAR_DISCOVERY_URL=https://caldav.icloud.com`
++- `WECHAT_ACP_CALENDAR_URL=...` (optional: skip CalDAV discovery if you already know the exact collection URL)
++
++Apple account notes:
++
++- Turn on two-factor authentication for the Apple account first.
++- Use an app-specific password, not the Apple account primary password.
++- Official Apple references:
++  - https://support.apple.com/en-us/121539
++  - https://support.apple.com/en-gb/102654
++
++After enabling the feature, send one of these direct messages to the bot:
++
++```text
++添加日历 | 端午出行 | 2026-06-19 09:00 | 2026-06-19 18:00 | 安吉 | 检查高速是否免费
++```
++
++or:
++
++```text
++添加日历
++标题: 端午出行
++开始: 2026-06-19 09:00
++结束: 2026-06-19 18:00
++地点: 安吉
++备注: 检查高速是否免费
++```
+ 
+ ## Runtime Behavior
+ 
+@@ -239,4 +293,4 @@ User IDs are sha256-hashed with a per-install salt stored in `~/.wechat-acp/tele
+ 
+ ## License
+ 
+-MIT
+\ No newline at end of file
++MIT
+diff --git a/bin/wechat-acp.ts b/bin/wechat-acp.ts
+index 8212f64..069a3d7 100644
+--- a/bin/wechat-acp.ts
++++ b/bin/wechat-acp.ts
+@@ -265,6 +265,7 @@ async function main(): Promise<void> {
+     Object.assign(config.agents, fileConfig.agents ?? {});
+     Object.assign(config.session, fileConfig.session ?? {});
+     Object.assign(config.imageGeneration, fileConfig.imageGeneration ?? {});
++    Object.assign(config.calendarIntegration, fileConfig.calendarIntegration ?? {});
+     Object.assign(config.daemon, fileConfig.daemon ?? {});
+     Object.assign(config.storage, fileConfig.storage ?? {});
+   }
+diff --git a/src/bridge.ts b/src/bridge.ts
+index 2bb14fb..4d499bf 100644
+--- a/src/bridge.ts
++++ b/src/bridge.ts
+@@ -25,6 +25,12 @@ import {
+   generateImage,
+   isImageGenerationRequest,
+ } from "./image/generation.js";
++import {
++  calendarCommandUsage,
++  isCalendarCreateRequest,
++  parseCalendarCreateRequest,
++} from "./calendar/intent.js";
++import { createCalendarEvent } from "./calendar/caldav.js";
+ 
+ const TEXT_CHUNK_LIMIT = 4000;
+ 
+@@ -156,6 +162,10 @@ export class WeChatAcpBridge {
+       await this.handleImageGeneration(userId, contextToken, text);
+       return;
+     }
++    if (this.config.calendarIntegration.enabled && isCalendarCreateRequest(text)) {
++      await this.handleCalendarCreate(userId, contextToken, text);
++      return;
++    }
+ 
+     const prompt = await weixinMessageToPrompt(
+       msg,
+@@ -205,6 +215,53 @@ export class WeChatAcpBridge {
+       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+     }
+   }
++
++  private async handleCalendarCreate(
++    userId: string,
++    contextToken: string,
++    text: string,
++  ): Promise<void> {
++    const startedAt = Date.now();
++    try {
++      const parsed = parseCalendarCreateRequest(text);
++      if (!parsed.ok) {
++        await this.sendReply(userId, contextToken, parsed.error);
++        return;
++      }
++
++      await this.sendTypingIndicator(userId, contextToken);
++      const created = await createCalendarEvent(
++        parsed.draft,
++        this.config.calendarIntegration,
++        this.log,
++      );
++
++      trackEvent("calendar.event_created", {
++        userIdHash: hashUserId(userId),
++        durationMs: Date.now() - startedAt,
++      });
++
++      await this.sendReply(
++        userId,
++        contextToken,
++        [
++          `日历已写入：${parsed.draft.title}`,
++          `事件ID：${created.uid}`,
++          `日历地址：${created.calendarUrl}`,
++        ].join("\n"),
++      );
++    } catch (err) {
++      this.log(`Calendar create failed for ${userId}: ${String(err)}`);
++      trackException(err, "calendar_create");
++      await this.sendReply(
++        userId,
++        contextToken,
++        `日历写入失败：${String(err)}\n\n${calendarCommandUsage()}`,
++      );
++    } finally {
++      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
++    }
++  }
+ 
+   private async sendReply(userId: string, contextToken: string, text: string): Promise<void> {
+     const formatted = formatForWeChat(text);
+diff --git a/src/config.ts b/src/config.ts
+index 304a993..a27b119 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -62,8 +62,8 @@ export const BUILT_IN_AGENTS: Record<string, AgentPreset> = {
+ };
+ 
+ export interface WeChatAcpConfig {
+-  wechat: {
+-    baseUrl: string;
++  wechat: {
++    baseUrl: string;
+     cdnBaseUrl: string;
+     botType: string;
+   };
+@@ -88,9 +88,20 @@ export interface WeChatAcpConfig {
+     size: string;
+     outputDir: string;
+   };
++  calendarIntegration: {
++    enabled: boolean;
++    provider: "caldav";
++    discoveryUrl: string;
++    calendarUrl?: string;
++    username: string;
++    password: string;
++    calendarName?: string;
++    defaultDurationMinutes: number;
++    defaultTimeZone: string;
++  };
+   daemon: {
+-    enabled: boolean;
+-    logFile: string;
++    enabled: boolean;
++    logFile: string;
+     pidFile: string;
+   };
+   storage: {
+@@ -153,9 +164,20 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
+       size: process.env.WECHAT_ACP_IMAGE_SIZE ?? "1024x1024",
+       outputDir: process.env.WECHAT_ACP_IMAGE_OUTPUT_DIR ?? path.join(storageDir, "generated-images"),
+     },
++    calendarIntegration: {
++      enabled: process.env.WECHAT_ACP_CALENDAR_ENABLED === "1",
++      provider: "caldav",
++      discoveryUrl: process.env.WECHAT_ACP_CALENDAR_DISCOVERY_URL ?? "https://caldav.icloud.com",
++      calendarUrl: process.env.WECHAT_ACP_CALENDAR_URL?.trim() || undefined,
++      username: process.env.WECHAT_ACP_CALENDAR_USERNAME ?? process.env.APPLE_CALENDAR_USERNAME ?? "",
++      password: process.env.WECHAT_ACP_CALENDAR_PASSWORD ?? process.env.APPLE_CALENDAR_APP_PASSWORD ?? "",
++      calendarName: process.env.WECHAT_ACP_CALENDAR_NAME?.trim() || undefined,
++      defaultDurationMinutes: Number.parseInt(process.env.WECHAT_ACP_CALENDAR_DEFAULT_DURATION_MINUTES ?? "60", 10) || 60,
++      defaultTimeZone: process.env.WECHAT_ACP_CALENDAR_TIME_ZONE ?? "Asia/Shanghai",
++    },
+     daemon: {
+-      enabled: false;
+-      logFile: path.join(storageDir, "wechat-acp.log"),
++      enabled: false,
++      logFile: path.join(storageDir, "wechat-acp.log"),
+       pidFile: path.join(storageDir, "daemon.pid"),
+     },
+     storage: {
+diff --git a/src/telemetry/index.ts b/src/telemetry/index.ts
+index 3dbefcb..08bac05 100644
+--- a/src/telemetry/index.ts
++++ b/src/telemetry/index.ts
+@@ -21,16 +21,17 @@ const require = createRequire(import.meta.url);
+ const CONNECTION_STRING =
+   "InstrumentationKey=94c435ed-3c7a-4428-862e-b8648d9fb199;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=02dd3391-f729-4208-90e7-28edf7f50d1e";
+ 
+-export type EventName =
+-  | "app.start"
+-  | "app.stop"
+-  | "login.success"
+-  | "login.failure"
+-  | "token.reused"
+-  | "message.received"
++export type EventName =
++  | "app.start"
++  | "app.stop"
++  | "login.success"
++  | "login.failure"
++  | "token.reused"
++  | "message.received"
+   | "session.created"
+   | "prompt.completed"
+   | "image.generated"
++  | "calendar.event_created"
+   | "reply.sent";

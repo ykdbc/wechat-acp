@@ -31,6 +31,10 @@ export type EventName =
   | "session.created"
   | "prompt.completed"
   | "image.generated"
+  | "calendar.event_created"
+  | "contact.created"
+  | "contact.deleted"
+  | "map.link_shared"
   | "reply.sent";
 
 type PropValue = string | number | boolean;

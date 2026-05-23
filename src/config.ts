@@ -88,6 +88,30 @@ export interface WeChatAcpConfig {
     size: string;
     outputDir: string;
   };
+  calendarIntegration: {
+    enabled: boolean;
+    provider: "caldav";
+    discoveryUrl: string;
+    calendarUrl?: string;
+    username: string;
+    password: string;
+    calendarName?: string;
+    defaultDurationMinutes: number;
+    defaultTimeZone: string;
+  };
+  contactsIntegration: {
+    enabled: boolean;
+    discoveryUrl: string;
+    addressBookUrl?: string;
+    addressBookName?: string;
+    username: string;
+    password: string;
+  };
+  mapsIntegration: {
+    enabled: boolean;
+    defaultMapType: "m" | "k" | "h" | "r";
+    defaultZoom?: number;
+  };
   daemon: {
     enabled: boolean;
     logFile: string;
@@ -153,6 +177,30 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
       size: process.env.WECHAT_ACP_IMAGE_SIZE ?? "1024x1024",
       outputDir: process.env.WECHAT_ACP_IMAGE_OUTPUT_DIR ?? path.join(storageDir, "generated-images"),
     },
+    calendarIntegration: {
+      enabled: process.env.WECHAT_ACP_CALENDAR_ENABLED === "1",
+      provider: "caldav",
+      discoveryUrl: process.env.WECHAT_ACP_CALENDAR_DISCOVERY_URL ?? "https://caldav.icloud.com",
+      calendarUrl: process.env.WECHAT_ACP_CALENDAR_URL?.trim() || undefined,
+      username: process.env.WECHAT_ACP_CALENDAR_USERNAME ?? process.env.APPLE_CALENDAR_USERNAME ?? "",
+      password: process.env.WECHAT_ACP_CALENDAR_PASSWORD ?? process.env.APPLE_CALENDAR_APP_PASSWORD ?? "",
+      calendarName: process.env.WECHAT_ACP_CALENDAR_NAME?.trim() || undefined,
+      defaultDurationMinutes: Number.parseInt(process.env.WECHAT_ACP_CALENDAR_DEFAULT_DURATION_MINUTES ?? "60", 10) || 60,
+      defaultTimeZone: process.env.WECHAT_ACP_CALENDAR_TIME_ZONE ?? "Asia/Shanghai",
+    },
+    contactsIntegration: {
+      enabled: process.env.WECHAT_ACP_CONTACTS_ENABLED === "1",
+      discoveryUrl: process.env.WECHAT_ACP_CONTACTS_DISCOVERY_URL ?? "https://contacts.icloud.com",
+      addressBookUrl: process.env.WECHAT_ACP_CONTACTS_ADDRESSBOOK_URL?.trim() || undefined,
+      addressBookName: process.env.WECHAT_ACP_CONTACTS_ADDRESSBOOK_NAME?.trim() || undefined,
+      username: process.env.WECHAT_ACP_CONTACTS_USERNAME ?? process.env.APPLE_CONTACTS_USERNAME ?? "",
+      password: process.env.WECHAT_ACP_CONTACTS_PASSWORD ?? process.env.APPLE_CONTACTS_APP_PASSWORD ?? "",
+    },
+    mapsIntegration: {
+      enabled: process.env.WECHAT_ACP_MAPS_ENABLED !== "0",
+      defaultMapType: parseMapType(process.env.WECHAT_ACP_MAPS_DEFAULT_TYPE),
+      defaultZoom: parseOptionalInteger(process.env.WECHAT_ACP_MAPS_DEFAULT_ZOOM),
+    },
     daemon: {
       enabled: false,
       logFile: path.join(storageDir, "wechat-acp.log"),
@@ -163,6 +211,17 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
       instance,
     },
   };
+}
+
+function parseMapType(value: string | undefined): "m" | "k" | "h" | "r" {
+  if (value === "k" || value === "h" || value === "r") return value;
+  return "m";
+}
+
+function parseOptionalInteger(value: string | undefined): number | undefined {
+  if (!value?.trim()) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
