@@ -22,6 +22,12 @@ export interface ContactRecord extends ContactDraft {
   etag?: string;
 }
 
+export interface DuplicatePhoneRecord {
+  phone: string;
+  normalizedPhone: string;
+  contacts: ContactRecord[];
+}
+
 const ADDRESS_BOOK_CACHE = new Map<string, string>();
 
 export async function findContacts(
@@ -212,6 +218,46 @@ export async function listContacts(config: ContactsIntegrationConfig): Promise<C
     .filter((value): value is ContactRecord => !!value);
 }
 
+export async function findDuplicatePhones(
+  config: ContactsIntegrationConfig,
+): Promise<DuplicatePhoneRecord[]> {
+  const contacts = await listContacts(config);
+  const grouped = new Map<string, { phone: string; contacts: ContactRecord[] }>();
+
+  for (const contact of contacts) {
+    const seenInContact = new Set<string>();
+    for (const phone of contact.phones ?? []) {
+      const normalizedPhone = normalizePhoneKey(phone);
+      if (!normalizedPhone || seenInContact.has(normalizedPhone)) continue;
+      seenInContact.add(normalizedPhone);
+
+      const current = grouped.get(normalizedPhone);
+      if (current) {
+        current.contacts.push(contact);
+        continue;
+      }
+      grouped.set(normalizedPhone, {
+        phone,
+        contacts: [contact],
+      });
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .filter(([, value]) => value.contacts.length > 1)
+    .map(([normalizedPhone, value]) => ({
+      phone: value.phone,
+      normalizedPhone,
+      contacts: value.contacts,
+    }))
+    .sort((left, right) => {
+      if (right.contacts.length !== left.contacts.length) {
+        return right.contacts.length - left.contacts.length;
+      }
+      return left.normalizedPhone.localeCompare(right.normalizedPhone);
+    });
+}
+
 async function getContactByUrl(url: string, config: ContactsIntegrationConfig): Promise<ContactRecord | null> {
   const all = await listContacts(config);
   return all.find((contact) => contact.url === url) ?? null;
@@ -388,6 +434,10 @@ function buildVCard(uid: string, draft: ContactDraft): string {
 
 function normalizedList(values?: string[]): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+function normalizePhoneKey(value: string): string {
+  return value.replace(/[^\d+]/g, "");
 }
 
 function firstVCardField(vcard: string, field: string): string | null {

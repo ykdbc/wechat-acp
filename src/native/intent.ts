@@ -3,6 +3,7 @@ export type NativeAction =
   | { type: "contact.append_phone"; fullName: string; phone: string }
   | { type: "contact.remove_phone"; phone: string; fullName?: string }
   | { type: "contact.lookup"; query: string }
+  | { type: "contact.find_duplicate_phones" }
   | { type: "contact.delete"; query: string }
   | { type: "map.lookup"; query: string };
 
@@ -12,6 +13,7 @@ export function parseNativeAction(text: string): NativeAction | null {
   return parseContactCreate(trimmed)
     ?? parseContactAppendPhone(trimmed)
     ?? parseContactRemovePhone(trimmed)
+    ?? parseContactFindDuplicatePhones(trimmed)
     ?? parseContactLookup(trimmed)
     ?? parseContactDelete(trimmed)
     ?? parseMapLookup(trimmed);
@@ -111,6 +113,19 @@ function parseContactLookup(text: string): NativeAction | null {
       type: "contact.lookup",
       query: cleanup(match[1]),
     };
+  }
+  return null;
+}
+
+function parseContactFindDuplicatePhones(text: string): NativeAction | null {
+  const patterns = [
+    /^(?:查询一下|查一下|帮我查一下|看看|扫描|检查|找出|查出)(?:一下)?(?:整个)?通讯录(?:里)?(?:有没有|是否有)?重复的(?:手机号|号码|电话)(?:[？?]|$)/,
+    /^(?:找|查)(?:出)?通讯录(?:里)?重复的(?:手机号|号码|电话)(?:[？?]|$)/,
+  ];
+  for (const pattern of patterns) {
+    if (pattern.test(text)) {
+      return { type: "contact.find_duplicate_phones" };
+    }
   }
   return null;
 }

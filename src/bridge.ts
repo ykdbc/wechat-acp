@@ -22,7 +22,14 @@ import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 import { extractImagePrompt, generateImage } from "./image/generation.js";
 import { createCalendarEvent } from "./calendar/caldav.js";
-import { appendPhoneToContact, createContact, deleteContact, findContacts, removePhoneFromContact } from "./contacts/service.js";
+import {
+  appendPhoneToContact,
+  createContact,
+  deleteContact,
+  findContacts,
+  findDuplicatePhones,
+  removePhoneFromContact,
+} from "./contacts/service.js";
 import { buildAppleMapsUrl } from "./maps/service.js";
 import {
   buildNativeActionInstruction,
@@ -241,6 +248,9 @@ export class WeChatAcpBridge {
       case "contact.lookup":
         await this.handleContactLookup(userId, contextToken, action.query);
         return;
+      case "contact.find_duplicate_phones":
+        await this.handleContactFindDuplicatePhones(userId, contextToken);
+        return;
       case "contact.delete":
         await this.handleContactDelete(userId, contextToken, action.query);
         return;
@@ -406,6 +416,42 @@ export class WeChatAcpBridge {
       this.log(`Contact lookup failed for ${userId}: ${String(err)}`);
       trackException(err, "contact_lookup");
       await this.sendReply(userId, contextToken, `联系人查询失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactFindDuplicatePhones(
+    userId: string,
+    contextToken: string,
+  ): Promise<void> {
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const duplicates = await findDuplicatePhones(this.config.contactsIntegration);
+      if (duplicates.length === 0) {
+        await this.sendReply(userId, contextToken, "通讯录里没有发现重复手机号。");
+        return;
+      }
+
+      const lines = [`找到 ${duplicates.length} 组重复手机号：`];
+      for (const group of duplicates.slice(0, 8)) {
+        lines.push(`手机号：${group.phone}`);
+        lines.push(`涉及联系人：${group.contacts.length}`);
+        lines.push(`联系人：${group.contacts.map((contact) => contact.fullName).join(" / ")}`);
+        lines.push("");
+      }
+      if (duplicates.length > 8) {
+        lines.push(`只展示前 8 组结果，其余 ${duplicates.length - 8} 组未展开。`);
+      }
+      await this.sendReply(userId, contextToken, lines.join("\n").trim());
+    } catch (err) {
+      this.log(`Contact duplicate phone scan failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_find_duplicate_phones");
+      await this.sendReply(userId, contextToken, `重复手机号检查失败：${String(err)}`);
     } finally {
       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
     }
