@@ -1,0 +1,4 @@
+interface:
+  display_name: "Truth-First Answering"
+  short_description: "真实优先，基于证据回答并自检。"
+  default_prompt: "Use $truth-first-answering to answer with evidence, uncertainty labels, sources, and expert self-critique."
