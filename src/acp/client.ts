@@ -16,10 +16,13 @@ export interface WeChatAcpClientOpts {
   showThoughts: boolean;
 }
 
+export type ClientMode = "default" | "native_action";
+
 export class WeChatAcpClient implements acp.Client {
   private chunks: string[] = [];
   private thoughtChunks: string[] = [];
   private opts: WeChatAcpClientOpts;
+  private mode: ClientMode = "default";
   private lastTypingAt = 0;
   private static readonly TYPING_INTERVAL_MS = 5_000;
 
@@ -35,9 +38,22 @@ export class WeChatAcpClient implements acp.Client {
     };
   }
 
+  updateMode(mode: ClientMode): void {
+    this.mode = mode;
+  }
+
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    if (this.mode === "native_action") {
+      this.opts.log(`[permission] denied in native_action mode: ${params.toolCall?.title ?? "unknown"}`);
+      return {
+        outcome: {
+          outcome: "cancelled",
+        },
+      };
+    }
+
     // Auto-allow: find first "allow" option
     const allowOpt = params.options.find(
       (o) => o.kind === "allow_once" || o.kind === "allow_always",
@@ -119,6 +135,9 @@ export class WeChatAcpClient implements acp.Client {
   }
 
   async readTextFile(params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> {
+    if (this.mode === "native_action") {
+      throw new Error(`File reads are disabled in native_action mode: ${params.path}`);
+    }
     try {
       const content = await fs.promises.readFile(params.path, "utf-8");
       return { content };
@@ -128,6 +147,9 @@ export class WeChatAcpClient implements acp.Client {
   }
 
   async writeTextFile(params: acp.WriteTextFileRequest): Promise<acp.WriteTextFileResponse> {
+    if (this.mode === "native_action") {
+      throw new Error(`File writes are disabled in native_action mode: ${params.path}`);
+    }
     try {
       await fs.promises.writeFile(params.path, params.content, "utf-8");
       return {};

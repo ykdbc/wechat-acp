@@ -2,6 +2,7 @@ import type { CalendarCreateDraft, CalendarMoment } from "../calendar/caldav.js"
 
 export type NativeActionEnvelope =
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
+  | { type: "contact.lookup"; query: string }
   | { type: "contact.delete"; query: string }
   | { type: "map.lookup"; query: string }
   | {
@@ -31,15 +32,20 @@ export function buildNativeActionInstruction(now: Date, timeZone: string): strin
   return [
     "NATIVE ACTION PROTOCOL:",
     `Current local time: ${nowText} (${timeZone})`,
-    "You can ask the bridge to execute local actions for contacts, calendar, and maps.",
-    "When the user wants you to operate contacts/calendar/maps, do NOT ask the coding agent to inspect the repo or config first.",
+    "You can ask the bridge to execute remote Apple actions for contacts, calendar, and maps.",
+    "Only use these actions when the user explicitly asks you to operate contacts/calendar/maps.",
+    "For factual questions, date lookups, holiday queries, news, weather, prices, explanations, or general chat, do not emit an action block.",
+    "When the user wants you to operate contacts/calendar/maps, do NOT inspect the repo, config, or local files first.",
+    "Do NOT browse the web first for contacts/calendar/maps operations when the action can be executed directly.",
+    "For these domains, your first priority is to emit the action block so the bridge can call the remote Apple data source.",
     "Instead, if you have enough information, reply with ONLY one XML-wrapped JSON action block and no extra prose:",
     "<wechat_acp_action>{...}</wechat_acp_action>",
     "Allowed actions:",
     '1. {"type":"contact.create","fullName":"张三","phone":"13800138000","note":"供应商"}',
-    '2. {"type":"contact.delete","query":"张三"}',
-    '3. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
-    '4. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
+    '2. {"type":"contact.lookup","query":"张三"}',
+    '3. {"type":"contact.delete","query":"张三"}',
+    '4. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
+    '5. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
     "For calendar.create:",
     "- Use absolute dates/times, not relative words like tomorrow.",
     "- Use YYYY-MM-DD for all-day events.",

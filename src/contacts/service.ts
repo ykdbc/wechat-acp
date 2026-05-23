@@ -180,7 +180,7 @@ async function resolveAddressBookUrl(config: ContactsIntegrationConfig): Promise
   let fallback: string | null = null;
   for (const response of responses) {
     const body = response[1] ?? "";
-    if (!/addressbook\s*\/?>/i.test(body)) continue;
+    if (!/<[^>]*addressbook\b[^>]*\/?>/i.test(body)) continue;
     const href = extractHref(body);
     if (!href) continue;
     const displayName = extractDisplayName(body);
@@ -295,13 +295,13 @@ function normalizedList(values?: string[]): string[] {
 
 function firstVCardField(vcard: string, field: string): string | null {
   const unfolded = vcard.replace(/\r?\n[ \t]/g, "");
-  const match = unfolded.match(new RegExp(`^${field}(?:;[^:]+)?:([^\\r\\n]+)$`, "mi"));
+  const match = unfolded.match(new RegExp(`^(?:[A-Za-z0-9._-]+\\.)?${field}(?:;[^:]+)?:([^\\r\\n]+)$`, "mi"));
   return match?.[1]?.trim() || null;
 }
 
 function allVCardFields(vcard: string, field: string): string[] {
   const unfolded = vcard.replace(/\r?\n[ \t]/g, "");
-  return Array.from(unfolded.matchAll(new RegExp(`^${field}(?:;[^:]+)?:([^\\r\\n]+)$`, "gmi")))
+  return Array.from(unfolded.matchAll(new RegExp(`^(?:[A-Za-z0-9._-]+\\.)?${field}(?:;[^:]+)?:([^\\r\\n]+)$`, "gmi")))
     .map((match) => match[1]?.trim() ?? "")
     .filter(Boolean);
 }

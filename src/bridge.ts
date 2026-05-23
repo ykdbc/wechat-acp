@@ -20,20 +20,10 @@ import { weixinMessageToPrompt } from "./adapter/inbound.js";
 import { formatForWeChat } from "./adapter/outbound.js";
 import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
-import {
-  extractImagePrompt,
-  generateImage,
-  isImageGenerationRequest,
-} from "./image/generation.js";
-import {
-  calendarCommandUsage,
-  isCalendarCreateRequest,
-  parseCalendarCreateRequest,
-} from "./calendar/intent.js";
+import { extractImagePrompt, generateImage } from "./image/generation.js";
 import { createCalendarEvent } from "./calendar/caldav.js";
 import { createContact, deleteContact, findContacts } from "./contacts/service.js";
 import { buildAppleMapsUrl } from "./maps/service.js";
-import { parseNativeAction, type NativeAction } from "./native/intent.js";
 import {
   buildNativeActionInstruction,
   calendarDraftFromAction,
@@ -166,21 +156,6 @@ export class WeChatAcpBridge {
     userId: string,
     contextToken: string,
   ): Promise<void> {
-    const text = this.extractText(msg.item_list);
-    const nativeAction = parseNativeAction(text);
-    if (nativeAction) {
-      await this.handleNativeAction(userId, contextToken, nativeAction);
-      return;
-    }
-    if (this.config.imageGeneration.enabled && isImageGenerationRequest(text)) {
-      await this.handleImageGeneration(userId, contextToken, text);
-      return;
-    }
-    if (this.config.calendarIntegration.enabled && isCalendarCreateRequest(text)) {
-      await this.handleCalendarCreate(userId, contextToken, text);
-      return;
-    }
-
     const prompt = await weixinMessageToPrompt(
       msg,
       this.config.wechat.cdnBaseUrl,
@@ -245,24 +220,6 @@ export class WeChatAcpBridge {
     }
   }
 
-  private async handleNativeAction(
-    userId: string,
-    contextToken: string,
-    action: NativeAction,
-  ): Promise<void> {
-    switch (action.type) {
-      case "contact.create":
-        await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
-        return;
-      case "contact.delete":
-        await this.handleContactDelete(userId, contextToken, action.query);
-        return;
-      case "map.lookup":
-        await this.handleMapLookup(userId, contextToken, action.query);
-        return;
-    }
-  }
-
   private async handleNativeActionEnvelope(
     userId: string,
     contextToken: string,
@@ -273,6 +230,9 @@ export class WeChatAcpBridge {
       case "contact.create":
         await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
         return;
+      case "contact.lookup":
+        await this.handleContactLookup(userId, contextToken, action.query);
+        return;
       case "contact.delete":
         await this.handleContactDelete(userId, contextToken, action.query);
         return;
@@ -282,53 +242,6 @@ export class WeChatAcpBridge {
       case "calendar.create":
         await this.handleCalendarCreateFromAi(userId, contextToken, action, remainingText);
         return;
-    }
-  }
-
-  private async handleCalendarCreate(
-    userId: string,
-    contextToken: string,
-    text: string,
-  ): Promise<void> {
-    const startedAt = Date.now();
-    try {
-      const parsed = parseCalendarCreateRequest(text);
-      if (!parsed.ok) {
-        await this.sendReply(userId, contextToken, parsed.error);
-        return;
-      }
-
-      await this.sendTypingIndicator(userId, contextToken);
-      const created = await createCalendarEvent(
-        parsed.draft,
-        this.config.calendarIntegration,
-        this.log,
-      );
-
-      trackEvent("calendar.event_created", {
-        userIdHash: hashUserId(userId),
-        durationMs: Date.now() - startedAt,
-      });
-
-      await this.sendReply(
-        userId,
-        contextToken,
-        [
-          `日历已写入：${parsed.draft.title}`,
-          `事件ID：${created.uid}`,
-          `日历地址：${created.calendarUrl}`,
-        ].join("\n"),
-      );
-    } catch (err) {
-      this.log(`Calendar create failed for ${userId}: ${String(err)}`);
-      trackException(err, "calendar_create");
-      await this.sendReply(
-        userId,
-        contextToken,
-        `日历写入失败：${String(err)}\n\n${calendarCommandUsage()}`,
-      );
-    } finally {
-      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
     }
   }
 
@@ -407,6 +320,51 @@ export class WeChatAcpBridge {
       this.log(`Contact create failed for ${userId}: ${String(err)}`);
       trackException(err, "contact_create");
       await this.sendReply(userId, contextToken, `联系人添加失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactLookup(
+    userId: string,
+    contextToken: string,
+    query: string,
+  ): Promise<void> {
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const matches = await findContacts(query, this.config.contactsIntegration);
+      if (matches.length === 0) {
+        await this.sendReply(userId, contextToken, `通讯录里没有找到“${query}”。`);
+        return;
+      }
+
+      const lines = [`找到 ${matches.length} 个联系人：`];
+      for (const contact of matches.slice(0, 8)) {
+        lines.push(contact.fullName);
+        if (contact.phones?.length) {
+          lines.push(`号码数量：${contact.phones.length}`);
+          lines.push(`电话：${contact.phones.join(" / ")}`);
+        }
+        if (contact.emails?.length) {
+          lines.push(`邮箱：${contact.emails.join(" / ")}`);
+        }
+        if (contact.note) {
+          lines.push(`备注：${contact.note}`);
+        }
+        lines.push("");
+      }
+      if (matches.length > 8) {
+        lines.push(`只展示前 8 个结果，其余 ${matches.length - 8} 个未展开。`);
+      }
+      await this.sendReply(userId, contextToken, lines.join("\n").trim());
+    } catch (err) {
+      this.log(`Contact lookup failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_lookup");
+      await this.sendReply(userId, contextToken, `联系人查询失败：${String(err)}`);
     } finally {
       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
     }

@@ -14,6 +14,7 @@ import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
 export interface PendingMessage {
   prompt: acp.ContentBlock[];
   contextToken: string;
+  mode?: "default" | "native_action";
 }
 
 export interface UserSession {
@@ -199,6 +200,7 @@ export class SessionManager {
           sendTyping: () => this.opts.sendTyping(session.userId, pending.contextToken),
           onThoughtFlush: (text) => this.opts.onReply(session.userId, pending.contextToken, text),
         });
+        session.client.updateMode(pending.mode ?? "default");
 
         // Reset chunks for the new turn
         await session.client.flush();

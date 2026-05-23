@@ -1,5 +1,6 @@
 export type NativeAction =
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
+  | { type: "contact.lookup"; query: string }
   | { type: "contact.delete"; query: string }
   | { type: "map.lookup"; query: string };
 
@@ -7,6 +8,7 @@ export function parseNativeAction(text: string): NativeAction | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   return parseContactCreate(trimmed)
+    ?? parseContactLookup(trimmed)
     ?? parseContactDelete(trimmed)
     ?? parseMapLookup(trimmed);
 }
@@ -50,8 +52,24 @@ function parseContactDelete(text: string): NativeAction | null {
   };
 }
 
+function parseContactLookup(text: string): NativeAction | null {
+  const patterns = [
+    /^(?:查询一下|查一下|帮我查一下|看看)(?:联系人)?(.+?)(?:还有几个号码|有几个号码|的号码|电话|手机号|联系方式|通讯录)(?:[？?]|$)/,
+    /^(?:查询|查找)(?:联系人)?(.+?)(?:[？?]|$)/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    return {
+      type: "contact.lookup",
+      query: cleanup(match[1]),
+    };
+  }
+  return null;
+}
+
 function parseMapLookup(text: string): NativeAction | null {
-  const match = text.match(/^(?:查询一下|查一下|帮我查一下|搜索一下|搜一下)(.+?)(?:，|,)?(?:把地图发给我|发我地图|给我地图)?$/);
+  const match = text.match(/^(?:查询一下|查一下|帮我查一下|搜索一下|搜一下)(.+?)(?:，|,)?(?:把地图发给我|发我地图|给我地图)$/);
   if (!match?.[1]) return null;
   return {
     type: "map.lookup",

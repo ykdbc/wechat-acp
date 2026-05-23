@@ -314,7 +314,7 @@ function selectCalendarCollection(xml: string, baseUrl: string, calendarName?: s
 
   for (const response of responses) {
     const body = response[1] ?? "";
-    if (!/calendar\s*\/?>/i.test(body)) continue;
+    if (!/<[^>]*calendar\b[^>]*\/?>/i.test(body)) continue;
 
     const hrefMatch = body.match(/<[^>]*href[^>]*>([^<]+)<\/[^>]*href>/i);
     if (!hrefMatch?.[1]) continue;
