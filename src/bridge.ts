@@ -22,7 +22,7 @@ import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
 import { extractImagePrompt, generateImage } from "./image/generation.js";
 import { createCalendarEvent } from "./calendar/caldav.js";
-import { appendPhoneToContact, createContact, deleteContact, findContacts } from "./contacts/service.js";
+import { appendPhoneToContact, createContact, deleteContact, findContacts, removePhoneFromContact } from "./contacts/service.js";
 import { buildAppleMapsUrl } from "./maps/service.js";
 import {
   buildNativeActionInstruction,
@@ -234,6 +234,9 @@ export class WeChatAcpBridge {
         return;
       case "contact.append_phone":
         await this.handleContactAppendPhone(userId, contextToken, action.fullName, action.phone);
+        return;
+      case "contact.remove_phone":
+        await this.handleContactRemovePhone(userId, contextToken, action.phone, action.fullName);
         return;
       case "contact.lookup":
         await this.handleContactLookup(userId, contextToken, action.query);
@@ -509,6 +512,60 @@ export class WeChatAcpBridge {
       this.log(`Contact delete failed for ${userId}: ${String(err)}`);
       trackException(err, "contact_delete");
       await this.sendReply(userId, contextToken, `联系人删除失败：${String(err)}`);
+    } finally {
+      this.cancelTypingIndicator(userId, contextToken).catch(() => {});
+    }
+  }
+
+  private async handleContactRemovePhone(
+    userId: string,
+    contextToken: string,
+    phone: string,
+    fullName?: string,
+  ): Promise<void> {
+    try {
+      if (!this.config.contactsIntegration.enabled) {
+        await this.sendReply(userId, contextToken, "通讯录能力未启用。");
+        return;
+      }
+      await this.sendTypingIndicator(userId, contextToken);
+      const matches = await findContacts(phone, this.config.contactsIntegration);
+      const narrowed = fullName
+        ? matches.filter((contact) => contact.fullName.includes(fullName))
+        : matches;
+      if (narrowed.length === 0) {
+        await this.sendReply(userId, contextToken, `没有找到包含手机号 ${phone} 的联系人。`);
+        return;
+      }
+      if (narrowed.length > 1) {
+        await this.sendReply(
+          userId,
+          contextToken,
+          [
+            `手机号 ${phone} 命中了 ${narrowed.length} 个联系人，请先明确删哪一个：`,
+            ...narrowed.slice(0, 8).map((contact, index) =>
+              `${index + 1}. ${contact.fullName}${contact.phones?.length ? ` / ${contact.phones.join(" / ")}` : ""}`,
+            ),
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const updated = await removePhoneFromContact(narrowed[0]!, phone, this.config.contactsIntegration);
+      await this.sendReply(
+        userId,
+        contextToken,
+        [
+          `已从联系人中删除手机号：${phone}`,
+          `联系人：${updated.fullName}`,
+          `剩余号码数量：${updated.phones?.length ?? 0}`,
+          updated.phones?.length ? `剩余电话：${updated.phones.join(" / ")}` : "",
+        ].filter(Boolean).join("\n"),
+      );
+    } catch (err) {
+      this.log(`Contact remove phone failed for ${userId}: ${String(err)}`);
+      trackException(err, "contact_remove_phone");
+      await this.sendReply(userId, contextToken, `删除手机号失败：${String(err)}`);
     } finally {
       this.cancelTypingIndicator(userId, contextToken).catch(() => {});
     }

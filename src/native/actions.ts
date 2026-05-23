@@ -3,6 +3,7 @@ import type { CalendarCreateDraft, CalendarMoment } from "../calendar/caldav.js"
 export type NativeActionEnvelope =
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
   | { type: "contact.append_phone"; fullName: string; phone: string }
+  | { type: "contact.remove_phone"; phone: string; fullName?: string }
   | { type: "contact.lookup"; query: string }
   | { type: "contact.delete"; query: string }
   | { type: "map.lookup"; query: string }
@@ -44,10 +45,11 @@ export function buildNativeActionInstruction(now: Date, timeZone: string): strin
     "Allowed actions:",
     '1. {"type":"contact.create","fullName":"张三","phone":"13800138000","note":"供应商"}',
     '2. {"type":"contact.append_phone","fullName":"张三","phone":"13800138000"}',
-    '3. {"type":"contact.lookup","query":"张三"}',
-    '4. {"type":"contact.delete","query":"张三"}',
-    '5. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
-    '6. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
+    '3. {"type":"contact.remove_phone","phone":"13800138000","fullName":"张三"}',
+    '4. {"type":"contact.lookup","query":"张三"}',
+    '5. {"type":"contact.delete","query":"张三"}',
+    '6. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
+    '7. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
     "For calendar.create:",
     "- Use absolute dates/times, not relative words like tomorrow.",
     "- Use YYYY-MM-DD for all-day events.",

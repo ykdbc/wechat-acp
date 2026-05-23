@@ -126,6 +126,53 @@ export async function appendPhoneToContact(
   };
 }
 
+export async function removePhoneFromContact(
+  contact: Pick<ContactRecord, "url" | "etag">,
+  phone: string,
+  config: ContactsIntegrationConfig,
+): Promise<ContactRecord> {
+  ensureCredentials(config);
+  const existing = await getContactByUrl(contact.url, config);
+  if (!existing) {
+    throw new Error("未找到要更新的联系人");
+  }
+
+  const targetKey = phone.replace(/[^\d+]/g, "");
+  const nextPhones = normalizedList(existing.phones).filter(
+    (value) => value.replace(/[^\d+]/g, "") !== targetKey,
+  );
+  if (nextPhones.length === normalizedList(existing.phones).length) {
+    throw new Error("联系人中不存在这个手机号");
+  }
+
+  const vcard = buildVCard(existing.uid, {
+    fullName: existing.fullName,
+    phones: nextPhones,
+    emails: existing.emails,
+    note: existing.note,
+  });
+
+  const response = await fetch(existing.url, {
+    method: "PUT",
+    headers: {
+      Authorization: basicAuth(config.username, config.password),
+      "Content-Type": "text/vcard; charset=utf-8",
+      ...(existing.etag ? { "If-Match": existing.etag } : {}),
+    },
+    body: vcard,
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`联系人更新失败：HTTP ${response.status}: ${compact(text)}`);
+  }
+
+  return {
+    ...existing,
+    phones: nextPhones,
+    etag: response.headers.get("etag") ?? existing.etag,
+  };
+}
+
 export async function deleteContact(
   contact: Pick<ContactRecord, "url" | "etag">,
   config: ContactsIntegrationConfig,
