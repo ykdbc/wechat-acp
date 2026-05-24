@@ -196,14 +196,23 @@ export class WeChatAcpBridge {
     userId: string,
     contextToken: string,
     prompt: string,
+    overrides?: {
+      size?: string;
+      quality?: string;
+    },
     remainingText = "",
   ): Promise<void> {
     const startedAt = Date.now();
     try {
       await this.sendTypingIndicator(userId, contextToken);
+      const imageConfig = {
+        ...this.config.imageGeneration,
+        size: overrides?.size?.trim() || this.config.imageGeneration.size,
+        quality: overrides?.quality?.trim() || this.config.imageGeneration.quality,
+      };
       const image = await generateImage(
         prompt,
-        this.config.imageGeneration,
+        imageConfig,
         this.log,
       );
 
@@ -216,7 +225,7 @@ export class WeChatAcpBridge {
 
       trackEvent("image.generated", {
         userIdHash: hashUserId(userId),
-        model: this.config.imageGeneration.model,
+        model: imageConfig.model,
         bytes: image.buffer.length,
         durationMs: Date.now() - startedAt,
       });
@@ -241,7 +250,13 @@ export class WeChatAcpBridge {
   ): Promise<void> {
     switch (action.type) {
       case "image.generate":
-        await this.handleImageGeneration(userId, contextToken, action.prompt, remainingText);
+        await this.handleImageGeneration(
+          userId,
+          contextToken,
+          action.prompt,
+          { size: action.size, quality: action.quality },
+          remainingText,
+        );
         return;
       case "contact.create":
         await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);

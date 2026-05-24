@@ -1,7 +1,7 @@
 import type { CalendarCreateDraft, CalendarMoment } from "../calendar/caldav.js";
 
 export type NativeActionEnvelope =
-  | { type: "image.generate"; prompt: string }
+  | { type: "image.generate"; prompt: string; size?: string; quality?: string }
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
   | { type: "contact.append_phone"; fullName: string; phone: string }
   | { type: "contact.remove_phone"; phone: string; fullName?: string }
@@ -45,7 +45,7 @@ export function buildNativeActionInstruction(now: Date, timeZone: string): strin
     "Instead, if you have enough information, reply with ONLY one XML-wrapped JSON action block and no extra prose:",
     "<wechat_acp_action>{...}</wechat_acp_action>",
     "Allowed actions:",
-    '1. {"type":"image.generate","prompt":"请生成一张类似你自己用 iPhone 随手自拍的照片，普通、略带运动模糊、构图随意"}',
+    '1. {"type":"image.generate","prompt":"请生成一张类似你自己用 iPhone 随手自拍的照片，普通、略带运动模糊、构图随意","size":"3840x2160","quality":"high"}',
     '2. {"type":"contact.create","fullName":"张三","phone":"13800138000","note":"供应商"}',
     '3. {"type":"contact.append_phone","fullName":"张三","phone":"13800138000"}',
     '4. {"type":"contact.remove_phone","phone":"13800138000","fullName":"张三"}',
@@ -57,6 +57,8 @@ export function buildNativeActionInstruction(now: Date, timeZone: string): strin
     "For image.generate:",
     "- Put the final image prompt into prompt directly.",
     "- Preserve the user's requested style, framing, realism, and constraints in the prompt.",
+    "- If the user asks for a specific resolution such as 4K or 3840x2160, include it in size.",
+    '- Use quality "high" when the user asks for ultra-detailed, print-ready, or 4K output.',
     "- If the user wants an image and has already provided enough details, emit image.generate immediately.",
     "For calendar.create:",
     "- Use absolute dates/times, not relative words like tomorrow.",
