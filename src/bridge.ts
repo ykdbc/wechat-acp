@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import type * as acp from "@agentclientprotocol/sdk";
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
@@ -39,6 +40,18 @@ import {
 } from "./native/actions.js";
 
 const TEXT_CHUNK_LIMIT = 4000;
+const TEXT_COALESCE_MS = parseEnvInteger("WECHAT_ACP_TEXT_COALESCE_MS", 10_000);
+const MEDIA_COALESCE_MS = parseEnvInteger("WECHAT_ACP_MEDIA_COALESCE_MS", 8000);
+const MIXED_COALESCE_MS = parseEnvInteger("WECHAT_ACP_MIXED_COALESCE_MS", 1200);
+const MESSAGE_DEDUPE_TTL_MS = parseEnvInteger("WECHAT_ACP_MESSAGE_DEDUPE_TTL_MS", 10 * 60_000);
+const MEDIA_DEDUPE_TTL_MS = parseEnvInteger("WECHAT_ACP_MEDIA_DEDUPE_TTL_MS", 10 * 60_000);
+
+interface PendingUserBatch {
+  userId: string;
+  contextToken: string;
+  messages: WeixinMessage[];
+  timer?: ReturnType<typeof setTimeout>;
+}
 
 export class WeChatAcpBridge {
   private config: WeChatAcpConfig;
@@ -50,6 +63,9 @@ export class WeChatAcpBridge {
   private ownerMemoryPath = process.env.WECHAT_ACP_OWNER_MEMORY_PATH?.trim();
   private ownerMemoryLogState: "unlogged" | "loaded" | "missing" = "unlogged";
   private log: (msg: string) => void;
+  private pendingUserBatches = new Map<string, PendingUserBatch>();
+  private seenMessageKeys = new Map<string, number>();
+  private seenMediaHashes = new Map<string, number>();
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
     this.config = config;
@@ -129,6 +145,10 @@ export class WeChatAcpBridge {
   async stop(): Promise<void> {
     this.log("Stopping bridge...");
     this.abortController.abort();
+    for (const batch of this.pendingUserBatches.values()) {
+      if (batch.timer) clearTimeout(batch.timer);
+    }
+    this.pendingUserBatches.clear();
     await this.sessionManager?.stop();
     this.log("Bridge stopped");
   }
@@ -144,36 +164,124 @@ export class WeChatAcpBridge {
     const contextToken = msg.context_token;
     if (!userId || !contextToken) return;
 
-    this.log(`Message from ${userId}: ${this.previewMessage(msg)}`);
+    this.pruneSeenMessageKeys();
+    const dedupeKeys = this.messageDedupeKeys(msg);
+    const duplicateKey = dedupeKeys.find((key) => this.seenMessageKeys.has(key));
+    if (duplicateKey) {
+      this.log(`Skipping duplicate message from ${userId}: ${this.describeMessageIdentity(msg)} (${this.previewMessage(msg)})`);
+      return;
+    }
+    const now = Date.now();
+    for (const key of dedupeKeys) {
+      this.seenMessageKeys.set(key, now);
+    }
+
+    this.log(`Message from ${userId}: ${this.previewMessage(msg)} (${this.describeMessageIdentity(msg)})`);
 
     trackEvent("message.received", {
       userIdHash: hashUserId(userId),
       kind: this.messageKind(msg),
     });
 
-    // Convert and enqueue — fire-and-forget (don't block the poll loop)
-    this.enqueueMessage(msg, userId, contextToken).catch((err) => {
-      this.log(`Failed to enqueue message from ${userId}: ${String(err)}`);
-      trackException(err, "enqueue");
-    });
+    this.bufferMessage(msg, userId, contextToken);
   }
 
-  private async enqueueMessage(
+  private bufferMessage(
     msg: WeixinMessage,
     userId: string,
     contextToken: string,
+  ): void {
+    const existing = this.pendingUserBatches.get(userId);
+    const batch = existing ?? {
+      userId,
+      contextToken,
+      messages: [],
+    };
+
+    batch.contextToken = contextToken;
+    batch.messages.push(msg);
+
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+
+    const delayMs = this.coalesceDelayMs(batch.messages);
+    batch.timer = setTimeout(() => {
+      this.flushUserBatch(userId).catch((err) => {
+        this.log(`Failed to enqueue message batch from ${userId}: ${String(err)}`);
+        trackException(err, "enqueue");
+      });
+    }, delayMs);
+    batch.timer.unref?.();
+
+    this.pendingUserBatches.set(userId, batch);
+    this.log(`Buffered ${batch.messages.length} message(s) from ${userId}; flushing in ${delayMs}ms`);
+  }
+
+  private async flushUserBatch(userId: string): Promise<void> {
+    const batch = this.pendingUserBatches.get(userId);
+    if (!batch) return;
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+    this.pendingUserBatches.delete(userId);
+
+    await this.enqueueMessages(batch.messages, batch.userId, batch.contextToken);
+  }
+
+  private async enqueueMessages(
+    messages: WeixinMessage[],
+    userId: string,
+    contextToken: string,
   ): Promise<void> {
-    const text = this.extractText(msg.item_list);
-    const prompt = await weixinMessageToPrompt(
-      msg,
-      this.config.wechat.cdnBaseUrl,
-      this.log,
-    );
+    const prompt: acp.ContentBlock[] = this.buildBatchContext(messages);
+    const texts: string[] = [];
+    const mediaHashes: string[] = [];
+    const batchMediaHashes = new Set<string>();
+
+    for (const msg of messages) {
+      const text = this.extractText(msg.item_list);
+      if (text.trim()) texts.push(text.trim());
+      const blocks = await weixinMessageToPrompt(
+        msg,
+        this.config.wechat.cdnBaseUrl,
+        this.log,
+      );
+      for (const block of blocks) {
+        const mediaHash = this.mediaHashFromBlock(block);
+        if (mediaHash) {
+          if (batchMediaHashes.has(mediaHash)) {
+            this.log(`Skipping duplicate image inside coalesced batch from ${userId}: media_hash=${previewId(mediaHash)}`);
+            continue;
+          }
+          batchMediaHashes.add(mediaHash);
+          mediaHashes.push(mediaHash);
+        }
+        prompt.push(block);
+      }
+    }
+
+    const combinedText = texts.join("\n").trim();
+    const kinds = messages.map((message) => this.messageKind(message)).join(",");
+    const summary = `${messages.length} coalesced message(s) from ${userId}: kinds=[${kinds}] text=${this.previewText(combinedText, 120) || "<none>"}`;
+    this.log(`Prepared ${summary}`);
+
+    this.pruneSeenMediaHashes();
+    if (!combinedText && mediaHashes.some((hash) => this.seenMediaHashes.has(hash))) {
+      this.log(`Skipping duplicate media-only batch from ${userId}: media_hashes=[${mediaHashes.map(previewId).join(",")}]`);
+      return;
+    }
+
+    const now = Date.now();
+    for (const hash of mediaHashes) {
+      this.seenMediaHashes.set(hash, now);
+    }
+    this.log(`Enqueueing ${summary}`);
 
     await this.sessionManager!.enqueue(userId, {
       prompt: this.withNativeActionContext(this.withOwnerMemoryContext(userId, prompt)),
       contextToken,
-      mode: isAppleActionDomain(text) ? "native_action" : "default",
+      mode: isAppleActionDomain(combinedText) ? "native_action" : "default",
     });
   }
 
@@ -226,10 +334,15 @@ export class WeChatAcpBridge {
       trackEvent("image.generated", {
         userIdHash: hashUserId(userId),
         model: imageConfig.model,
+        size: imageConfig.size,
+        quality: imageConfig.quality,
         bytes: image.buffer.length,
+        ...(image.width ? { width: image.width } : {}),
+        ...(image.height ? { height: image.height } : {}),
         durationMs: Date.now() - startedAt,
       });
-      this.log(`Generated image sent to ${userId}: ${image.path}`);
+      const dimensions = image.width && image.height ? ` (${image.width}x${image.height})` : "";
+      this.log(`Generated image sent to ${userId}: ${image.path}${dimensions}`);
       if (remainingText.trim()) {
         await this.sendReply(userId, contextToken, remainingText.trim());
       }
@@ -786,6 +899,113 @@ export class WeChatAcpBridge {
     return compact.length > maxLen ? `${compact.substring(0, maxLen)}...` : compact;
   }
 
+  private coalesceDelayMs(messages: WeixinMessage[]): number {
+    const hasMedia = messages.some((msg) => this.hasMedia(msg.item_list));
+    const hasText = messages.some((msg) => this.extractText(msg.item_list).trim().length > 0);
+
+    if (hasMedia && hasText) return MIXED_COALESCE_MS;
+    if (hasMedia) return MEDIA_COALESCE_MS;
+    return TEXT_COALESCE_MS;
+  }
+
+  private buildBatchContext(messages: WeixinMessage[]): acp.ContentBlock[] {
+    if (messages.length <= 1) return [];
+    return [
+      {
+        type: "text",
+        text: [
+          "WECHAT MESSAGE BATCH CONTEXT:",
+          `The next ${messages.length} WeChat messages arrived close together from the same user and must be treated as one user turn.`,
+          "Preserve the original order and use all supplied text and media together as the user's complete input.",
+          "Do not answer these batched messages separately.",
+          "END WECHAT MESSAGE BATCH CONTEXT.",
+        ].join("\n"),
+      },
+    ];
+  }
+
+  private hasMedia(itemList?: MessageItem[]): boolean {
+    return (itemList ?? []).some((item) =>
+      item.type === MessageItemType.IMAGE ||
+      item.type === MessageItemType.FILE ||
+      item.type === MessageItemType.VIDEO ||
+      (item.type === MessageItemType.VOICE && !item.voice_item?.text)
+    );
+  }
+
+  private messageDedupeKeys(msg: WeixinMessage): string[] {
+    const keys: string[] = [];
+    if (msg.message_id != null) keys.push(`message_id:${msg.message_id}`);
+    if (msg.client_id) keys.push(`client_id:${msg.client_id}`);
+    if (msg.seq != null && msg.create_time_ms != null) {
+      keys.push(`seq:${msg.seq}:${msg.create_time_ms}`);
+    }
+
+    for (const item of msg.item_list ?? []) {
+      if (item.msg_id) keys.push(`item_msg_id:${item.msg_id}`);
+      const media = item.image_item?.media ?? item.video_item?.media ?? item.file_item?.media ?? item.voice_item?.media;
+      if (media?.encrypt_query_param) {
+        keys.push(`media:${item.type ?? "unknown"}:${stableHash(media.encrypt_query_param)}`);
+      }
+    }
+
+    if (keys.length === 0) {
+      const text = this.extractText(msg.item_list);
+      const kind = this.messageKind(msg);
+      keys.push(`fallback:${msg.from_user_id ?? ""}:${msg.create_time_ms ?? ""}:${kind}:${stableHash(text)}`);
+    }
+    return keys;
+  }
+
+  private pruneSeenMessageKeys(): void {
+    const cutoff = Date.now() - MESSAGE_DEDUPE_TTL_MS;
+    for (const [key, seenAt] of this.seenMessageKeys) {
+      if (seenAt < cutoff) {
+        this.seenMessageKeys.delete(key);
+      }
+    }
+  }
+
+  private pruneSeenMediaHashes(): void {
+    const cutoff = Date.now() - MEDIA_DEDUPE_TTL_MS;
+    for (const [key, seenAt] of this.seenMediaHashes) {
+      if (seenAt < cutoff) {
+        this.seenMediaHashes.delete(key);
+      }
+    }
+  }
+
+  private mediaHashFromBlock(block: acp.ContentBlock): string | null {
+    if (block.type === "image" && "data" in block && typeof block.data === "string") {
+      return stableHash(block.data);
+    }
+    return null;
+  }
+
+  private describeMessageIdentity(msg: WeixinMessage): string {
+    const parts = [
+      msg.message_id != null ? `message_id=${msg.message_id}` : "",
+      msg.seq != null ? `seq=${msg.seq}` : "",
+      msg.client_id ? `client_id=${previewId(msg.client_id)}` : "",
+      msg.create_time_ms != null ? `created=${msg.create_time_ms}` : "",
+    ].filter(Boolean);
+
+    const itemIds = (msg.item_list ?? [])
+      .map((item) => item.msg_id)
+      .filter((id): id is string => !!id);
+    if (itemIds.length) parts.push(`item_msg_ids=${itemIds.map(previewId).join(",")}`);
+
+    const mediaCount = (msg.item_list ?? []).filter((item) =>
+      item.image_item?.media?.encrypt_query_param ||
+      item.video_item?.media?.encrypt_query_param ||
+      item.file_item?.media?.encrypt_query_param ||
+      item.voice_item?.media?.encrypt_query_param
+    ).length;
+    if (mediaCount) parts.push(`media=${mediaCount}`);
+
+    return parts.length ? parts.join(" ") : "no-id";
+  }
+
   private withOwnerMemoryContext(
     userId: string,
     prompt: acp.ContentBlock[],
@@ -886,6 +1106,21 @@ export class WeChatAcpBridge {
     }
     return "empty";
   }
+}
+
+function parseEnvInteger(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function stableHash(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+
+function previewId(value: string): string {
+  return value.length > 18 ? `${value.substring(0, 8)}...${value.substring(value.length - 6)}` : value;
 }
 
 function isAppleActionDomain(text: string): boolean {

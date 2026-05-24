@@ -14,6 +14,8 @@ export interface GeneratedImage {
   buffer: Buffer;
   mimeType: string;
   path: string;
+  width?: number;
+  height?: number;
 }
 
 const IMAGE_INTENT_PATTERNS = [
@@ -103,11 +105,19 @@ export async function generateImage(
   const filename = `${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
   const outputPath = path.join(config.outputDir, filename);
   fs.writeFileSync(outputPath, buffer);
+  const dimensions = pngDimensions(buffer);
+  if (dimensions) {
+    log(`Generated image saved: ${outputPath} (${dimensions.width}x${dimensions.height}, ${buffer.length} bytes)`);
+  } else {
+    log(`Generated image saved: ${outputPath} (${buffer.length} bytes)`);
+  }
 
   return {
     buffer,
     mimeType: "image/png",
     path: outputPath,
+    width: dimensions?.width,
+    height: dimensions?.height,
   };
 }
 
@@ -119,4 +129,21 @@ function buildImageGenerationUrl(baseUrl: string): string {
   const normalized = baseUrl.replace(/\/$/, "");
   if (normalized.endsWith("/v1")) return `${normalized}/images/generations`;
   return `${normalized}/v1/images/generations`;
+}
+
+function pngDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 24) return null;
+  if (
+    buffer[0] !== 0x89 ||
+    buffer[1] !== 0x50 ||
+    buffer[2] !== 0x4e ||
+    buffer[3] !== 0x47
+  ) {
+    return null;
+  }
+
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
 }

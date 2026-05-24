@@ -145,12 +145,17 @@ export async function startMonitor(opts: MonitorOpts): Promise<void> {
 function summarizeMessage(msg: WeixinMessage): string {
   const itemTypes = (msg.item_list ?? []).map((item) => item.type).join(",");
   return [
+    `message_id=${msg.message_id ?? "<none>"}`,
+    `seq=${msg.seq ?? "<none>"}`,
+    `client_id=${previewId(msg.client_id)}`,
+    `created=${msg.create_time_ms ?? "<none>"}`,
     `message_type=${msg.message_type}`,
     `state=${msg.message_state}`,
     `from=${msg.from_user_id ? "yes" : "no"}`,
     `context=${msg.context_token ? "yes" : "no"}`,
     `group=${msg.group_id ? "yes" : "no"}`,
     `items=[${itemTypes}]`,
+    `item_msg_ids=[${itemMsgIds(msg)}]`,
     `text=${previewText(extractText(msg))}`,
   ].join(" ");
 }
@@ -167,4 +172,17 @@ function previewText(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (!compact) return "<none>";
   return compact.length > 80 ? `${compact.substring(0, 80)}...` : compact;
+}
+
+function itemMsgIds(msg: WeixinMessage): string {
+  const ids = (msg.item_list ?? [])
+    .map((item) => item.msg_id)
+    .filter((id): id is string => !!id)
+    .map(previewId);
+  return ids.length ? ids.join(",") : "<none>";
+}
+
+function previewId(value: string | undefined): string {
+  if (!value) return "<none>";
+  return value.length > 18 ? `${value.substring(0, 8)}...${value.substring(value.length - 6)}` : value;
 }
