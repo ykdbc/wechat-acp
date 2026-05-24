@@ -1,6 +1,7 @@
 import type { CalendarCreateDraft, CalendarMoment } from "../calendar/caldav.js";
 
 export type NativeActionEnvelope =
+  | { type: "image.generate"; prompt: string }
   | { type: "contact.create"; fullName: string; phone: string; note?: string }
   | { type: "contact.append_phone"; fullName: string; phone: string }
   | { type: "contact.remove_phone"; phone: string; fullName?: string }
@@ -35,23 +36,28 @@ export function buildNativeActionInstruction(now: Date, timeZone: string): strin
   return [
     "NATIVE ACTION PROTOCOL:",
     `Current local time: ${nowText} (${timeZone})`,
-    "You can ask the bridge to execute remote Apple actions for contacts, calendar, and maps.",
-    "Only use these actions when the user explicitly asks you to operate contacts/calendar/maps.",
+    "You can ask the bridge to execute native actions for image generation, contacts, calendar, and maps.",
+    "Only use these actions when the user explicitly asks you to generate an image or operate contacts/calendar/maps.",
     "For factual questions, date lookups, holiday queries, news, weather, prices, explanations, or general chat, do not emit an action block.",
-    "When the user wants you to operate contacts/calendar/maps, do NOT inspect the repo, config, or local files first.",
-    "Do NOT browse the web first for contacts/calendar/maps operations when the action can be executed directly.",
-    "For these domains, your first priority is to emit the action block so the bridge can call the remote Apple data source.",
+    "When the user wants image generation or contacts/calendar/maps operations, do NOT inspect the repo, config, or local files first.",
+    "Do NOT browse the web first for image generation or contacts/calendar/maps operations when the action can be executed directly.",
+    "For these domains, your first priority is to emit the action block so the bridge can execute it directly.",
     "Instead, if you have enough information, reply with ONLY one XML-wrapped JSON action block and no extra prose:",
     "<wechat_acp_action>{...}</wechat_acp_action>",
     "Allowed actions:",
-    '1. {"type":"contact.create","fullName":"张三","phone":"13800138000","note":"供应商"}',
-    '2. {"type":"contact.append_phone","fullName":"张三","phone":"13800138000"}',
-    '3. {"type":"contact.remove_phone","phone":"13800138000","fullName":"张三"}',
-    '4. {"type":"contact.lookup","query":"张三"}',
-    '5. {"type":"contact.find_duplicate_phones"}',
-    '6. {"type":"contact.delete","query":"张三"}',
-    '7. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
-    '8. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
+    '1. {"type":"image.generate","prompt":"请生成一张类似你自己用 iPhone 随手自拍的照片，普通、略带运动模糊、构图随意"}',
+    '2. {"type":"contact.create","fullName":"张三","phone":"13800138000","note":"供应商"}',
+    '3. {"type":"contact.append_phone","fullName":"张三","phone":"13800138000"}',
+    '4. {"type":"contact.remove_phone","phone":"13800138000","fullName":"张三"}',
+    '5. {"type":"contact.lookup","query":"张三"}',
+    '6. {"type":"contact.find_duplicate_phones"}',
+    '7. {"type":"contact.delete","query":"张三"}',
+    '8. {"type":"map.lookup","query":"安吉县君悦国际小区"}',
+    '9. {"type":"calendar.create","title":"端午节提醒","start":"2026-06-19","end":"2026-06-20","notes":"端午节","reminderMinutesBefore":1440}',
+    "For image.generate:",
+    "- Put the final image prompt into prompt directly.",
+    "- Preserve the user's requested style, framing, realism, and constraints in the prompt.",
+    "- If the user wants an image and has already provided enough details, emit image.generate immediately.",
     "For calendar.create:",
     "- Use absolute dates/times, not relative words like tomorrow.",
     "- Use YYYY-MM-DD for all-day events.",

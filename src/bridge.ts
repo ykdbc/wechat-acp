@@ -20,7 +20,7 @@ import { weixinMessageToPrompt } from "./adapter/inbound.js";
 import { formatForWeChat } from "./adapter/outbound.js";
 import type { WeChatAcpConfig } from "./config.js";
 import { trackEvent, trackException, hashUserId } from "./telemetry/index.js";
-import { extractImagePrompt, generateImage } from "./image/generation.js";
+import { generateImage } from "./image/generation.js";
 import { createCalendarEvent } from "./calendar/caldav.js";
 import {
   appendPhoneToContact,
@@ -195,13 +195,14 @@ export class WeChatAcpBridge {
   private async handleImageGeneration(
     userId: string,
     contextToken: string,
-    text: string,
+    prompt: string,
+    remainingText = "",
   ): Promise<void> {
     const startedAt = Date.now();
     try {
       await this.sendTypingIndicator(userId, contextToken);
       const image = await generateImage(
-        extractImagePrompt(text),
+        prompt,
         this.config.imageGeneration,
         this.log,
       );
@@ -220,6 +221,9 @@ export class WeChatAcpBridge {
         durationMs: Date.now() - startedAt,
       });
       this.log(`Generated image sent to ${userId}: ${image.path}`);
+      if (remainingText.trim()) {
+        await this.sendReply(userId, contextToken, remainingText.trim());
+      }
     } catch (err) {
       this.log(`Image generation failed for ${userId}: ${String(err)}`);
       trackException(err, "image_generation");
@@ -236,6 +240,9 @@ export class WeChatAcpBridge {
     remainingText: string,
   ): Promise<void> {
     switch (action.type) {
+      case "image.generate":
+        await this.handleImageGeneration(userId, contextToken, action.prompt, remainingText);
+        return;
       case "contact.create":
         await this.handleContactCreate(userId, contextToken, action.fullName, action.phone, action.note);
         return;
